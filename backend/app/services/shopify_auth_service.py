@@ -3,8 +3,10 @@ from secrets import token_urlsafe
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import HTTPException, status
+from fastapi import HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
+
+from ingest_products import ingest_products
 
 from app.config.settings import settings
 from app.database.repositories.shop_installation_repository import ShopInstallationRepository
@@ -263,7 +265,7 @@ class ShopifyAuthService:
     # ------------------------------------------------------------------
 
     async def exchange_token(
-        self, *, id_token: str, shop: str, db: Session
+        self, *, id_token: str, shop: str, db: Session, background_tasks: BackgroundTasks = None
     ) -> str:
         """Exchange a Shopify session token (id_token JWT) for a permanent
         offline access token using the Token Exchange grant type.
@@ -341,6 +343,12 @@ class ShopifyAuthService:
             associated_user_id=None,
         )
         logger.info("Token exchange — offline token saved to DB for shop=%s", shop)
+        if background_tasks:
+            logger.info("Triggering background product ingestion for shop=%s", shop)
+            background_tasks.add_task(ingest_products, shop_domain=shop)
+        else:
+            logger.warning("BackgroundTasks not provided; skipping ingestion trigger for shop=%s", shop)
+            
         return access_token
 
     def _cleanup_expired_states(self) -> None:

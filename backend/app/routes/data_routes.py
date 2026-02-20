@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.orm import Session
 
 from app.database.engine import get_db
@@ -49,3 +49,44 @@ async def dashboard(shop: str, db: Session = Depends(get_db)):
     )
 
     return HTMLResponse(content=html_content)
+
+
+# ── Product Sync Endpoints ─────────────────────────────────────────────────────
+
+@router.post("/api/products/sync")
+async def sync_products(background_tasks: BackgroundTasks, shop: str, db: Session = Depends(get_db)):
+    """
+    Trigger background ingestion of all products for a shop into Meilisearch.
+    Returns immediately with 202 Accepted.
+    """
+    from ingest_products import ingest_products, get_sync_status, SYNC_STATUS
+
+    repo = ShopInstallationRepository(db)
+    installation = repo.get_by_shop(shop)
+    if not installation:
+        raise HTTPException(status_code=404, detail=f"Shop not found: {shop}")
+
+    # Prevent double-trigger if already processing
+    current = get_sync_status(shop)
+    if current.get("status") in ("fetching", "processing"):
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "Sync already in progress.", "status": current}
+        )
+
+    # Clear old status and kick off background task
+    SYNC_STATUS[shop] = {"status": "fetching", "total": 0, "done": 0, "error": ""}
+    background_tasks.add_task(ingest_products, shop_domain=shop)
+
+    return JSONResponse(status_code=202, content={"detail": "Product sync started.", "shop": shop})
+
+
+@router.get("/api/products/sync-status")
+async def sync_status(shop: str):
+    """
+    Poll the current sync status for a shop.
+    Returns: { status, total, done, error }
+    """
+    from ingest_products import get_sync_status
+    return JSONResponse(content=get_sync_status(shop))
+

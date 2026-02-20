@@ -11,9 +11,21 @@ class Settings(BaseSettings):
     state_ttl_seconds: int = 600
     log_level: str = "INFO"
     request_log_body_limit: int = 4000
+    openai_api_key: str = None
+    
     # Where to send the merchant after a successful OAuth install.
     # Swap this for your real frontend URL when it's ready.
     post_install_redirect_url: str = "https://bilalportfolio-hazel.vercel.app/"
+    
+    # Meilisearch
+    meilisearch_url: str = "http://localhost:7700"
+    meilisearch_master_key: str = "masterKey"
+    meilisearch_index: str = "products"
+
+    # WhatsApp Platform Integration (platform-wide config)
+    wa_platform_url: str = ""
+    wa_platform_shared_secret: str = ""
+    # NOTE: per-store agentId, apiKey, webhookUrl are stored in the DB per ShopInstallation
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

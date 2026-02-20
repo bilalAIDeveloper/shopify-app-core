@@ -25,3 +25,14 @@ class ShopInstallation(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+    # ── WhatsApp Platform Integration (per-store) ─────────────────────────────
+    # Populated after calling POST /api/shopify/provision on the WA Platform.
+    wa_agent_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    wa_api_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # INACTIVE | CONNECTING | ACTIVE | DISCONNECTED | ERROR
+    wa_status: Mapped[str | None] = mapped_column(String(50), nullable=True, default="INACTIVE")
+    wa_phone_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Latest QR code data URI — overwritten each time the platform pushes a new one
+    wa_qr_code: Mapped[str | None] = mapped_column(String(10000), nullable=True)
+

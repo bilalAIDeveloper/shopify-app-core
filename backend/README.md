@@ -6,6 +6,7 @@ Minimal, modular FastAPI backend for Shopify app install and OAuth callback veri
 - FastAPI
 - SQLAlchemy
 - SQLite (file-based, for local testing)
+- Meilisearch (for full-text and vector search)
 
 ## Project structure
 - `app/main.py`: app bootstrap + router wiring
