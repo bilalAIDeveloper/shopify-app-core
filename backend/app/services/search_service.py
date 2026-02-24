@@ -115,17 +115,17 @@ class SearchService:
         filter_str: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Runs dual hybrid search (text embedder vs image embedder) and merges results.
+        Runs dual hybrid search (text embedder vs image embedder) in parallel and merges results.
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         index = self.get_index(settings.meilisearch_index)
         if not index:
             return []
 
-        text_hits = []
-        image_hits = []
-
-        # 1. Search via Text Embedder (OpenAI)
-        if text_vector:
+        def _search_text():
+            if not text_vector:
+                return []
             params = {
                 "hybrid": {"embedder": "text", "semanticRatio": semantic_ratio},
                 "vector": text_vector,
@@ -133,11 +133,16 @@ class SearchService:
             }
             if filter_str:
                 params["filter"] = filter_str
-            res = index.search(query, params)
-            text_hits = res.get("hits", [])
+            try:
+                res = index.search(query, params)
+                return res.get("hits", [])
+            except Exception as e:
+                logger.error(f"Text embedder search failed: {e}")
+                return []
 
-        # 2. Search via Image Embedder (SigLIP)
-        if image_vector:
+        def _search_image():
+            if not image_vector:
+                return []
             params = {
                 "hybrid": {"embedder": "image", "semanticRatio": semantic_ratio},
                 "vector": image_vector,
@@ -145,10 +150,24 @@ class SearchService:
             }
             if filter_str:
                 params["filter"] = filter_str
-            res = index.search(query, params)
-            image_hits = res.get("hits", [])
+            try:
+                res = index.search(query, params)
+                return res.get("hits", [])
+            except Exception as e:
+                logger.error(f"Image embedder search failed: {e}")
+                return []
 
-        # 3. Merge & Score (Double Hit Heuristic)
+        # ── Run both Meilisearch queries in parallel ────────────────────────────
+        text_hits = []
+        image_hits = []
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            future_text  = pool.submit(_search_text)
+            future_image = pool.submit(_search_image)
+            text_hits  = future_text.result()
+            image_hits = future_image.result()
+
+        # ── Merge & Score (Double Hit Heuristic) ───────────────────────────────
         seen: Dict[str, Dict] = {}
 
         for hit in text_hits:

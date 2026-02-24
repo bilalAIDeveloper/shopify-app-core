@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import List, Dict, Any, Optional
 
@@ -19,8 +20,11 @@ class AIService:
         self,
         text_content: str,
         media_url: Optional[str] = None,
-        phone_number: Optional[str] = None
-    ) -> Dict[str, Any]:
+        phone_number: Optional[str] = None,
+        chat_history: Optional[List[Dict[str, str]]] = None,
+        on_search_start: Optional['Callable[[str], Awaitable[None]]'] = None,
+        on_products_found: Optional['Callable[[list], Awaitable[None]]'] = None
+    ) -> str:
         """
         Main entry point for handling an incoming WhatsApp message with AI.
         """
@@ -28,7 +32,18 @@ class AIService:
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
 
-        # Construct the user message
+        # Inject chat history if provided
+        if chat_history:
+            for msg in chat_history:
+                # Ensure we only pass valid roles
+                role = msg.get("role")
+                if role in ["user", "assistant"]:
+                    messages.append({
+                        "role": role,
+                        "content": msg.get("content", "")
+                    })
+
+        # Construct the new user message
         user_msg_content = []
         if text_content:
             user_msg_content.append({"type": "text", "text": text_content})
@@ -43,8 +58,6 @@ class AIService:
                 user_msg_content.append({"type": "text", "text": "Please find products similar to this image."})
 
         messages.append({"role": "user", "content": user_msg_content})
-
-        search_results = []
 
         try:
             logger.info(f"Sending message to OpenAI for user {phone_number}")
@@ -73,23 +86,32 @@ class AIService:
                         search_query = args.get("search_query", "")
                         color_filter = args.get("color_filter")
                         max_price = args.get("max_price")
+                        searching_message = args.get("searching_message", "Give me a moment to look for that! 🔎")
                         
                         logger.info(f"AI requested search with query: '{search_query}', color: {color_filter}, max_price: {max_price}")
                         
-                        # Execute the search
-                        search_results = await self._execute_search(
+                        # Trigger early notification to WA (e.g. "Hold on, searching...")
+                        if on_search_start:
+                            await on_search_start(searching_message)
+
+                        # Execute the search — returns (full_results, ai_context)
+                        full_results, ai_context = await self._execute_search(
                             text_query=search_query,
                             original_media_url=media_url, # Pass the original media for hybrid vector search
                             color=color_filter,
                             max_price=max_price
                         )
                         
-                        # Append the tool's result to the messages
+                        # Dispatch image cards to WhatsApp using full results (has image_url + handle)
+                        if on_products_found:
+                            await on_products_found(full_results)
+
+                        # Feed only the lean ai_context to the LLM (no links or internal fields)
                         messages.append({
                             "tool_call_id": tool_call.id,
                             "role": "tool",
                             "name": "search_products",
-                            "content": json.dumps(search_results)
+                            "content": json.dumps(ai_context)
                         })
 
                 # Second call to OpenAI to generate the final response using the tool results
@@ -100,24 +122,15 @@ class AIService:
                     max_tokens=500
                 )
                 
-                return {
-                    "text": final_response.choices[0].message.content,
-                    "products": search_results
-                }
+                return final_response.choices[0].message.content
 
             else:
                 # The model didn't call the tool, just answered directly
-                return {
-                    "text": response_message.content,
-                    "products": []
-                }
+                return response_message.content
 
         except Exception as e:
             logger.error(f"Error processing message with AI: {e}")
-            return {
-                "text": "I'm sorry, I'm having trouble connecting to my system right now. Please try again later.",
-                "products": []
-            }
+            return "I'm sorry, I'm having trouble connecting to my system right now. Please try again later."
 
     async def _execute_search(
         self,
@@ -140,37 +153,68 @@ class AIService:
             filters.append(f"price <= {max_price}")
         filter_str = " AND ".join(filters) if filters else None
 
-        # Generate Text Vector
-        if text_query:
+        # ── Parallel Embedding ─────────────────────────────────────────────────
+        # All embedding calls are blocking (torch / OpenAI HTTP). We offload each
+        # to a thread so they run concurrently rather than sequentially.
+        async def _embed_openai():
             try:
-                text_vector = embedding_service.embed_text(text_query)
+                return embedding_service.embed_text(text_query)
             except Exception as e:
-                logger.error(f"Failed to embed text query: {e}")
+                logger.error(f"OpenAI text embedding failed: {e}")
+                return None
 
-        # Generate Image Vector (If media was provided)
+        async def _embed_siglip_text():
+            try:
+                logger.info(f"SigLIP text → visual embedding: '{text_query}'")
+                return await asyncio.to_thread(
+                    embedding_service.embed_query_for_image_search, text_query
+                )
+            except Exception as e:
+                logger.error(f"SigLIP text embedding failed: {e}")
+                return None
+
+        async def _embed_siglip_image():
+            try:
+                logger.info(f"SigLIP image embedding from URL: {original_media_url}")
+                return await asyncio.to_thread(
+                    embedding_service.embed_image, original_media_url
+                )
+            except Exception as e:
+                logger.error(f"SigLIP image embedding failed: {e}")
+                return None
+
         if original_media_url:
-            try:
-                # We can download the image and embed it using SigLIP
-                logger.info(f"Embedding image from WhatsApp: {original_media_url}")
-                # Note: this blocks the async event loop in httpx inside embedding_service, 
-                # but it's acceptable for now. To make it purely async, embedding_service should be updated.
-                image_vector = embedding_service.embed_image(original_media_url)
-            except Exception as e:
-                logger.error(f"Failed to embed image from WA: {e}")
+            # Run all three in parallel: OpenAI text + SigLIP text + SigLIP image
+            text_vector, siglip_text_vector, siglip_image_vector = await asyncio.gather(
+                asyncio.to_thread(embedding_service.embed_text, text_query) if text_query else asyncio.sleep(0),
+                _embed_siglip_text() if text_query else asyncio.sleep(0),
+                _embed_siglip_image()
+            )
+            # Actual image vector takes priority over text-derived SigLIP vector
+            image_vector = siglip_image_vector or siglip_text_vector
+        else:
+            # Run OpenAI + SigLIP text in parallel (no image provided)
+            text_vector, image_vector = await asyncio.gather(
+                asyncio.to_thread(embedding_service.embed_text, text_query) if text_query else asyncio.sleep(0),
+                _embed_siglip_text() if text_query else asyncio.sleep(0)
+            )
 
-        # Perform Hybrid Search search_service.perform_hybrid_search
-        results = search_service.perform_hybrid_search(
+        # Offload sync Meilisearch search to a thread — keeps the event loop free
+        results = await asyncio.to_thread(
+            search_service.perform_hybrid_search,
             query=text_query,
             text_vector=text_vector,
             image_vector=image_vector,
-            limit=3,  # Top 3 deals 
+            limit=3,
             filter_str=filter_str
         )
 
-        # Simplify results to save tokens for the LLM
-        simplified_results = []
+        # Full results for the backend image dispatcher (needs image_url + handle)
+        full_results = []
+        # Lean results fed to the LLM — no links, no internal fields, just human-readable metadata
+        ai_context = []
         for r in results:
-            simplified_results.append({
+            full_results.append({
                 "title": r.get("title"),
                 "color": r.get("color"),
                 "size": r.get("size"),
@@ -178,8 +222,15 @@ class AIService:
                 "handle": r.get("handle"),
                 "image_url": r.get("image_url")
             })
+            ai_context.append({
+                "title": r.get("title"),
+                "color": r.get("color"),
+                "size": r.get("size"),
+                "price": r.get("price"),
+                "type": r.get("type") or r.get("product_type")
+            })
 
-        return simplified_results
+        return full_results, ai_context
 
 
 ai_service = AIService()

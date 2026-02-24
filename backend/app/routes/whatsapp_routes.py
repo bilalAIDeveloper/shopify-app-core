@@ -3,8 +3,9 @@ import hmac
 import json
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
+import base64
 
 from app.config.settings import settings
 from app.database.engine import get_db
@@ -31,6 +32,84 @@ def verify_wa_signature(raw_body: bytes, signature: str, secret: str) -> bool:
     ).hexdigest()
     # Use compare_digest to prevent timing attacks
     return hmac.compare_digest(expected, signature)
+
+async def send_product_messages(api_key: str, phone_number: str, products: list):
+    """
+    Background task to send up to 3 separate API calls for each product.
+    Resolves the image to a base64 string and formats the text per product.
+    """
+    if not products or not api_key:
+        return
+        
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # Take at most 3 products
+        for p in products[:3]:
+            image_url = p.get("image_url")
+            if not image_url:
+                continue
+                
+            # 1. Download image and convert to Base64
+            try:
+                img_res = await client.get(image_url)
+                img_res.raise_for_status()
+                b64_data = base64.b64encode(img_res.content).decode("utf-8")
+            except Exception as e:
+                logger.error(f"Failed to download image {image_url}: {e}")
+                continue
+                
+            # 2. Format custom caption
+            title = p.get("title", "Product")
+            price = p.get("price", "N/A")
+            handle = p.get("handle", "")
+            url = f"https://ismailsclothing.com/products/{handle}"
+            
+            content = f"*{title}*\n\n*PKR {price}*\n\n{url}"
+            
+            # 3. Fire-and-forget WA platform dispatch
+            payload = {
+                "phoneNumber": phone_number,
+                "content": content,
+                "media": {
+                    "type": "IMAGE",
+                    "data": b64_data
+                }
+            }
+            
+            try:
+                headers = {
+                    "x-api-key": api_key,
+                    "Content-Type": "application/json"
+                }
+                send_url = f"{settings.wa_platform_url.rstrip('/')}/api/send-message"
+                res = await client.post(send_url, json=payload, headers=headers)
+                res.raise_for_status()
+            except Exception as e:
+                logger.error(f"Failed to send product message via WhatsApp Platform: {e}")
+
+
+async def send_text_message(api_key: str, phone_number: str, text: str):
+    """
+    Background task to dispatch a quick text message via the WA Platform.
+    Useful for 'Searching...' or interim status updates.
+    """
+    if not text or not api_key:
+        return
+        
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        payload = {
+            "phoneNumber": phone_number,
+            "content": text
+        }
+        headers = {
+            "x-api-key": api_key,
+            "Content-Type": "application/json"
+        }
+        send_url = f"{settings.wa_platform_url.rstrip('/')}/api/send-message"
+        try:
+            res = await client.post(send_url, json=payload, headers=headers)
+            res.raise_for_status()
+        except Exception as e:
+            logger.error(f"Failed to send interim text message via WA Platform: {e}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -171,6 +250,7 @@ def get_agent_status(shop: str, db: Session = Depends(get_db)):
 @router.post("/messages")
 async def receive_message(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_wa_signature: str = Header(default=None),
     db: Session = Depends(get_db),
 ):
@@ -196,37 +276,65 @@ async def receive_message(
     metadata    = payload.get("metadata", {})
     shop_id     = metadata.get("shopId")
     domain      = metadata.get("domain")
+    wa_api_key  = metadata.get("apiKey")  # Now provided securely in the payload!
 
-    message     = payload.get("message", {})
-    message_id  = message.get("id")        # Use for deduplication later
-    from_number = message.get("from")
-    contact     = message.get("contactName")
-    content     = message.get("content", "")
-    media       = message.get("media")     # None for text-only messages
+    message           = payload.get("message", {})
+    message_id        = message.get("id")        # Use for deduplication later
+    from_number       = message.get("from")
+    contact           = message.get("contactName")
+    content           = message.get("content", "")
+    processed_content = message.get("processedContent")  # WA-generated image caption
+    media             = message.get("media")     # None for text-only messages
+
+    # Merge text content with image caption (processedContent) into a single enriched string.
+    # This avoids sending the image to OpenAI's vision API — cheaper, faster, and sufficient
+    # since the WA platform already describes the image for us.
+    if processed_content and processed_content != content:
+        if content:
+            effective_text = f"{content}\n\n Fine products based on this image description \n [Image description: {processed_content}]"
+        else:
+            effective_text = f"Fine products based on this image description \n [Image description: {processed_content}]"  
+    else:
+        effective_text = content
+
+    logger.info(f"Effective text: {effective_text}")
+
+    media_url    = media.get("url") if media else None  # Only used for SigLIP visual embedding
+    chat_history = payload.get("chatHistory", [])
 
     logger.info(
-        "/messages — shop=%s | from=%s (%s) | msg_id=%s | content=%r | has_media=%s",
-        domain, from_number, contact, message_id, content, media is not None,
+        "/messages — shop=%s | from=%s (%s) | msg_id=%s | content=%r | has_processed=%s | has_media=%s | history_len=%d",
+        domain, from_number, contact, message_id, content,
+        processed_content is not None, media is not None, len(chat_history)
     )
 
     # ── AI processing ──────────
     from app.services.ai_service import ai_service
-    media_url = media.get("url") if media else None
 
     try:
-        response_data = await ai_service.process_whatsapp_message(
-            text_content=content,
+        async def _on_search_start(msg: str):
+            if wa_api_key and from_number:
+                background_tasks.add_task(send_text_message, wa_api_key, from_number, msg)
+
+        async def _on_products_found(products: list):
+            if products and wa_api_key and from_number:
+                background_tasks.add_task(send_product_messages, wa_api_key, from_number, products)
+
+        reply = await ai_service.process_whatsapp_message(
+            text_content=effective_text,
             media_url=media_url,
-            phone_number=from_number
+            phone_number=from_number,
+            chat_history=chat_history,
+            on_search_start=_on_search_start,
+            on_products_found=_on_products_found
         )
-        reply = response_data.get("text", "")
-        products = response_data.get("products", [])
+
     except Exception as e:
         logger.error(f"Error calling AI service: {e}")
         reply = "I'm sorry, I'm experiencing technical difficulties right now. Please try again later."
-        products = []
 
-    return {"content": reply, "products": products}
+    # Returning {"content": reply} replies to the incoming message instantly with the text
+    return {"content": reply}
 
 
 # ─────────────────────────────────────────────────────────────
