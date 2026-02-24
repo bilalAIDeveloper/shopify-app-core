@@ -1,13 +1,64 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, File, UploadFile, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.orm import Session
+from typing import Optional
+import io
+from PIL import Image
 
 from app.database.engine import get_db
 from app.database.repositories.shop_installation_repository import ShopInstallationRepository
 from app.services.shopify_service import ShopifyService
-from app.templates import DASHBOARD_HTML, generate_product_row, generate_customer_row, generate_order_row
+from app.services.embedding_service import embedding_service
+from app.services.search_service import search_service
+from app.templates import (
+    DASHBOARD_HTML, 
+    SEARCH_VISUALIZER_HTML,
+    generate_product_row, 
+    generate_customer_row, 
+    generate_order_row
+)
 
 router = APIRouter()
+
+# ... existing routes ...
+
+@router.get("/search-visualizer", response_class=HTMLResponse)
+async def search_visualizer():
+    return HTMLResponse(content=SEARCH_VISUALIZER_HTML)
+
+
+@router.post("/api/search/visualize")
+async def api_visualize_search(
+    query: str = Form(""),
+    limit: int = Form(10),
+    image: Optional[UploadFile] = File(None)
+):
+    """
+    Backend API for the visual debugger.
+    Handles text embedding, optional image embedding, and hybrid search.
+    """
+    text_vector = None
+    image_vector = None
+
+    # 1. Text Embedding (if query provided)
+    if query:
+        text_vector = embedding_service.embed_text(query)
+
+    # 2. Image Embedding (if file uploaded)
+    if image:
+        content = await image.read()
+        pil_img = Image.open(io.BytesIO(content))
+        image_vector = embedding_service.embed_image(pil_img)
+
+    # 3. Hybrid Search
+    results = search_service.perform_hybrid_search(
+        query=query,
+        text_vector=text_vector,
+        image_vector=image_vector,
+        limit=limit
+    )
+
+    return {"results": results}
 
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(shop: str, db: Session = Depends(get_db)):

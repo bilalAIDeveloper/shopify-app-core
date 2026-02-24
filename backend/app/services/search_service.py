@@ -105,5 +105,69 @@ class SearchService:
             logger.error(f"Error searching {index_name}: {e}")
             return {}
 
+    def perform_hybrid_search(
+        self,
+        query: str,
+        text_vector: Optional[List[float]] = None,
+        image_vector: Optional[List[float]] = None,
+        limit: int = 10,
+        semantic_ratio: float = 0.6,
+        filter_str: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Runs dual hybrid search (text embedder vs image embedder) and merges results.
+        """
+        index = self.get_index(settings.meilisearch_index)
+        if not index:
+            return []
+
+        text_hits = []
+        image_hits = []
+
+        # 1. Search via Text Embedder (OpenAI)
+        if text_vector:
+            params = {
+                "hybrid": {"embedder": "text", "semanticRatio": semantic_ratio},
+                "vector": text_vector,
+                "limit": limit
+            }
+            if filter_str:
+                params["filter"] = filter_str
+            res = index.search(query, params)
+            text_hits = res.get("hits", [])
+
+        # 2. Search via Image Embedder (SigLIP)
+        if image_vector:
+            params = {
+                "hybrid": {"embedder": "image", "semanticRatio": semantic_ratio},
+                "vector": image_vector,
+                "limit": limit
+            }
+            if filter_str:
+                params["filter"] = filter_str
+            res = index.search(query, params)
+            image_hits = res.get("hits", [])
+
+        # 3. Merge & Score (Double Hit Heuristic)
+        seen: Dict[str, Dict] = {}
+
+        for hit in text_hits:
+            pid = hit["id"]
+            hit["_sources"] = ["text"]
+            hit["_score"] = 1
+            seen[pid] = hit
+
+        for hit in image_hits:
+            pid = hit["id"]
+            if pid in seen:
+                seen[pid]["_score"] = 2
+                seen[pid]["_sources"].append("image")
+            else:
+                hit["_sources"] = ["image"]
+                hit["_score"] = 1
+                seen[pid] = hit
+
+        return sorted(seen.values(), key=lambda h: h["_score"], reverse=True)
+
 # Singleton instance
 search_service = SearchService()

@@ -209,12 +209,24 @@ async def receive_message(
         domain, from_number, contact, message_id, content, media is not None,
     )
 
-    # ── TODO: Add real message handling logic here ──────────
-    # e.g. AI response, order lookup, product search, etc.
+    # ── AI processing ──────────
+    from app.services.ai_service import ai_service
+    media_url = media.get("url") if media else None
 
-    reply = f"Hi {contact or 'there'}! Thanks for your message. We'll be in touch shortly. 👋"
+    try:
+        response_data = await ai_service.process_whatsapp_message(
+            text_content=content,
+            media_url=media_url,
+            phone_number=from_number
+        )
+        reply = response_data.get("text", "")
+        products = response_data.get("products", [])
+    except Exception as e:
+        logger.error(f"Error calling AI service: {e}")
+        reply = "I'm sorry, I'm experiencing technical difficulties right now. Please try again later."
+        products = []
 
-    return {"content": reply}
+    return {"content": reply, "products": products}
 
 
 # ─────────────────────────────────────────────────────────────
