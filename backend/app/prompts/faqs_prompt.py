@@ -1,75 +1,63 @@
 FAQ_CONTENT = """
+Contact: customercare@ismailsclothing.com | 042 32301095
+
 ## Privacy Policy
-
-Your personal information is confidential. We do not rent, sell, barter or trade email addresses. When you place an order with us, we collect your name, address, telephone number, credit card information and your email address. We use this information to fulfil your order and to communicate with you about your order. All your information is kept confidential and will not be disclosed to anybody unless ordered by government authorities
-
-For queries email at: customercare@ismailsclothing.com or call at: 042 32301095
-
----
+We collect your name, address, phone, email, and payment info solely to fulfil and communicate about your order. This data is kept strictly confidential and never sold, rented, or shared — except if required by law.
 
 ## FAQs
 
-### Do I need to set up an account to place an order?
-We at Ismail's understand the importance of your time, therefore creating an account with us gives you access to the following benefits:
-- Manage your account details, track your order status and review past purchases.
-- Save your shipping details for future purchases and a faster shopping experience.
-- Be informed about our latest stock, special online promotions, and discounts.
+Account: Optional — benefits include order tracking, saved shipping details, and receiving promotions. Guest checkout is also available.
 
-Alternatively, you can use a guest account to checkout without registering.
+Placing an order: Browse the website, select size/color and quantity, click "Add to Cart", then proceed to checkout to confirm details, select payment, apply vouchers, and place the order.
 
-### How do I place an order?
-Orders can be placed while navigating our website as a registered user or even as a guest user. On any product page, select your color/size choices (if applicable), choose the quantity and then press the "Add to Cart" button. This will open up your shopping cart where you may choose to continue shopping or head on to check out. On the checkout page, you may add or confirm your personal and shipping information, select payment options, enter any discount vouchers (if applicable) and review your order before selecting "Place order now".
+Payment methods:
+- Cash on Delivery (COD): Available across Pakistan; have exact change ready as agents carry none.
+- Prepaid: VISA, MasterCard, EasyPaisa, JazzCash, or direct bank transfer — all SSL-encrypted.
 
-### What kind of payment methods do you accept?
-Currently, the following payment methods are accepted:
+Order confirmation: An acknowledgment email is sent after ordering. Shipping status is visible under "My Orders" in your account dashboard.
 
-**Cash on Delivery**
-This option is available for customers throughout Pakistan. Using this option, you can pay cash to the delivery agent upon receipt of your order. Please ensure that you have the exact amount at hand since our delivery agents do not carry change/petty cash.
+Verification code: An SMS code is sent after ordering to help improve delivery. If not received, hit resend; if still missing, you may have entered the wrong number and will receive a call from us.
 
-**Prepaid options**
-Our secure payment services allow for VISA, MasterCard, EasyPaisa, Jazzcash and even direct transfer from your bank account is available to be used for payment. All your details and your data will be securely transmitted from end-to-end via SSL encryption.
+Order without code: Yes — your order is already placed even without submitting the code. Submitting it just helps us deliver faster.
 
-### How do I know if Ismail's has received my order?
-After you place your order on the website, an acknowledgment email will be sent to you from Ismail's store to confirm that your order has been placed. This will not, however, indicate if the order has been shipped. That information may be confirmed under "My Orders" in your Account Dashboard.
+Order tracking: A tracking number is emailed with your order confirmation and is also visible in your account. Guest customers can call or email us with the tracking number.
 
-### Why do I need a verification code sent to my mobile?
-After you've placed an order of your desired product, a code will be sent to the mobile number you provided previously. After submitting this code, your order will have been confirmed. This process only helps us to improve our delivery system.
+Delivery time: 3–5 working days within Pakistan; 7–10 days for international orders. Contact us if your order is late.
 
-### What if I don't receive the code?
-You should have received an SMS with your code by now. If it isn't there, you may hit resend again. If you still didn't receive the code, you may have provided the wrong number. If that is the case, you will receive a call from us.
+Wrong or damaged item: Contact us to arrange a return or exchange per our Exchange/Return Policy.
 
-### Will my order be placed if I don't send the code?
-Yes, your order has been placed; this process just helps us to provide better customer service. We highly recommend that you submit the code for a faster delivery.
+Incomplete order: Contact us — we will resolve it at no extra charge.
 
-### How can I track my order?
-As soon as your order is placed, you will be mailed a tracking number with the order confirmation email. All you have to do is open your account on Ismail's website, and you can see your order status against that tracking number. You may also call or email our Customer Care with the tracking number information to find out the status of your order, especially if you checked out as a guest.
+Cancellation: Email customercare@ismailsclothing.com before shipment. Post-shipment follows our Exchange/Return Policy.
 
-### How long will it take for my order to be delivered?
-All orders will be delivered by our courier service providers within 3-5 working days within Pakistan and 7-10 days for International orders. If your order has not been delivered in the specified time, please contact our Customer Care.
+Stock availability: Shown on each product page. Out-of-stock items are clearly marked; contact us for sizing or availability queries.
 
-### What if an incorrect/damaged item is delivered to me?
-Although we take extra precautions to ensure that each order is in mint condition, should an unfortunate mishap occur, you can get in touch with our Customer Care to return the item or exchange it for the correct order. Exchanges/Returns are governed by our Exchange/Return Policies.
+Out of stock: Stock is updated regularly — check back on the website frequently.
 
-### What if an incomplete order is delivered to me?
-Full care is taken to ensure that no incomplete order is shipped out. However, in case such a mishap does occur, you can get in touch with our Customer Care to identify this issue and we will rectify it at the earliest, at no extra charge.
+Sizing: Refer to our Size Chart on the website, or contact us for help.
 
-### What is the procedure for canceling an order?
-Order cancellation is dependent on whether or not it has been shipped. Send your order cancellation request to customercare@ismailsclothing.com. If the order has been shipped, however, you may return/exchange the product in accordance with our Exchange/Return policies.
+Cookies: Used to track visit frequency, cart contents, and purchase history to personalize your experience.
 
-### How do I know if an item is in stock?
-You can find all the details about a certain product next to it. If an item is not available, the product page will identify this. For queries and special requests concerning sizing and/or availability, please call or email our Customer Care.
+Feedback: Always welcome — contact us anytime with comments or suggestions.
 
-### The item I want is out of stock. What do I do?
-Sometimes, highly popular items may temporarily run out of stock. As our stocks are continuously updated, please keep checking the Ismail's website regularly to remain abreast of updated stock content.
+## Terms & Conditions
+Advance Payments: Orders over Rs 20,000 and self-collections require advance online payment.
+Refunds: Strictly "No Refund" (no cashback) unless an item is out-of-stock or faulty. Refunds (excluding shipping) process within 2 weeks and may take up to 2 billing cycles to appear on the original credit card.
+Order Cancellation: We may refuse or cancel orders for any reason, including stock issues, payment declines, or typographical errors in pricing/product info, even after confirmation and payment. If your card was charged before cancellation, an immediate credit will be issued.
+Lost Shipping: Contact us if not received within 7 days of dispatch.
+Disclaimer: Actual colors/textures may vary slightly from product images due to lighting/screens.
+Copyright: All website content, design, and software remain our property.
 
-### How do I know what size will me?
-Please refer to our Size Chart. For further help, please contact our Customer Care.
+## Shipping & Handling
+Local Orders: Flat rate Rs 150 nationwide via Swyft, Leopard, Trax, Postex, or M&P. **Do not accept shipments in non-Ismail's flyers.** Delivery takes 3–6 business days. Verification required via call/SMS. For out-of-stock COD items, only available items ship. For out-of-stock credit card items, we will contact you for a replacement choice. We will notify you via phone/email if a shipment is delayed.
+International Orders: Delivery takes 6–10 business days. Rates based on weight/destination (can be estimated in shopping cart). Import duties, local taxes, and administration charges are not included in quoted prices and must be paid by the customer upon receipt. Out-of-stock items wait for your replacement choice. We will notify you via email if a shipment is delayed.
+Payment Processing: Credit card processing may take up to 3 business days.
 
-### What are cookies and how do they affect me?
-In short, a cookie is a tiny amount of information stored on your computer by your web browser to track your movements within websites. We use cookies to keep track of the frequency of your visits to our website, the contents of your shopping cart, purchase history and to deliver specific content designed to give you a uniquely personalised shopping experience as well trying to save your time.
-
-### I have a comment/suggestion regarding your product/service
-Please don't hesitate in writing to us or contacting our Customer Care with your comments and suggestions. We highly value any and all feedback from our customers and fans!
-
-For queries email at: customercare@ismailsclothing.com or call at: 042 32301095.
+## Return & Exchange Policy
+Activation: This policy applies once the order is placed and the parcel is received, or payment is processed.
+Eligibility: Exchange allowed within 7 working days (10 days for unworn/non-discounted). You must submit a request (via email, phone call, SMS, or WhatsApp) stating the reason. Items must be unwashed, unused, without odors/stains, and have original tags, packaging, and invoice intact. Subject to quality inspection at our warehouse. Online purchases can be exchanged in-store or via courier.
+Exclusions: Minor color/texture differences do not qualify for exchange. Shoes and accessories cannot be exchanged (hygiene reasons). International orders and retail store purchases cannot be exchanged via courier (retail items MUST be exchanged in-store). Claims on previous season's stock are not entertained.
+Sale Items: No exchange/refund/claim on discounted items (50-70% off). If bought at full price but now on sale, exchange is at the marked-down sale price. Sale items cannot be exchanged for new arrivals.
+Claims & Damages: Report manufacturing defects, wrong sizes, or wrong items within 2 working days with the paper invoice. Processing takes 1 week. Company's decision on claims/exchanges is final.
+Shipping Costs: Customer bears return shipping costs unless the item arrived damaged or the wrong item was delivered. Shipping/handling charges are non-refundable.
 """
