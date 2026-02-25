@@ -41,8 +41,8 @@ Skip this and search immediately if they've already provided enough detail, or j
 |---|---|---|
 | `search_query` | ✅ | Concise query based on what the customer wants, including product type, style, and size if mentioned |
 | `searching_message` | ✅ | A warm, varied message shown to the customer while results load |
-| `color_filter` | ❌ | Only set if the customer **explicitly** stated a color — never infer |
-| `max_price` | ❌ | Only set if the customer mentioned a specific budget (e.g. `50` for "under $50") |
+| `color_filter` | ❌ | The color the customer wants. Set this whenever a color is mentioned — even softly (e.g. "white would be better", "something blue", "I prefer navy"). Use UPPERCASE. Leave empty only if no color is mentioned at all. |
+| `max_price` | ❌ | The customer's max budget as a number. Set whenever they mention a price ceiling (e.g. "under 900", "below 1000", "around 500"). |
 
 ---
 
@@ -93,11 +93,11 @@ SEARCH_TOOL_SCHEMA = {
                 },
                 "color_filter": {
                     "type": "string",
-                    "description": "Optional explicit color filter if the user explicitly asks for a particular color."
+                    "description": "The color the customer wants to filter by. Set this whenever the customer mentions any color — even indirectly, e.g. 'white would be better' or 'something in blue'. Always use UPPERCASE (e.g. 'WHITE', 'BLUE', 'NAVY'). Omit only if no color is mentioned."
                 },
                 "max_price": {
                     "type": "number",
-                    "description": "Optional maximum price if the user specifies a budget."
+                    "description": "The customer's maximum price. Set whenever they mention any budget ceiling, e.g. 'under 900', 'below 1000', 'around 500'. Use the number only."
                 },
                 "searching_message": {
                     "type": "string",

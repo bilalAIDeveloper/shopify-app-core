@@ -1,37 +1,60 @@
 """
 test_search.py
 ──────────────
-Interactive hybrid search test against the Meilisearch products index.
+Two test modes in one script:
 
-Runs two searches in parallel:
-  1. Hybrid on the "text" embedder  (OpenAI 3072-dim + BM25 on search_text)
-  2. Hybrid on the "image" embedder (SigLIP text encoder 768-dim + BM25)
+  MODE 1 – RAW SEARCH (positional query arg)
+  Tests Meilisearch directly, bypassing OpenAI entirely. Fast & deterministic.
 
-Then merges and de-dupes by product, boosting items that appeared in both.
+      python test_search.py "black cargo pants"
+      python test_search.py "blue jeans" --color BLUE --max-price 1500
+      python test_search.py "navy t-shirt" --text-only
 
-Usage:
-    python test_search.py "black cargo pants"
-    python test_search.py "red shirt for boys" --limit 5
-    python test_search.py "blue jeans" --ratio 0.8   # more vector, less BM25
-    python test_search.py "navy t-shirt" --color NAVY
-    python test_search.py "jeans under 1000" --max-price 1000
+  MODE 2 – FULL AI PIPELINE (--ai flag)
+  Sends the message through the full GPT prompt → tool call → search → response
+  flow and prints a structured breakdown of every step, including:
+    • What arguments GPT sent to search_products
+    • The resulting filter string and vector shapes
+    • The raw Meilisearch hits
+    • The final AI response
+
+      python test_search.py --ai "blue jeans for boys"
+      python test_search.py --ai "shirts under 1000"
 """
 
 import argparse
-import sys
+import asyncio
+import json
 import os
+import sys
 from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app.config.settings import settings
-from app.services.embedding_service import embedding_service
-import meilisearch
+# ── ANSI colours ────────────────────────────────────────────────────────────
+CYAN    = "\033[96m"
+YELLOW  = "\033[93m"
+GREEN   = "\033[92m"
+RED     = "\033[91m"
+BOLD    = "\033[1m"
+RESET   = "\033[0m"
 
-INDEX_NAME = settings.meilisearch_index
+def banner(title: str):
+    bar = "━" * 66
+    print(f"\n{CYAN}{BOLD}{bar}\n  {title}\n{bar}{RESET}")
+
+def section(title: str):
+    print(f"\n{YELLOW}{BOLD}▶ {title}{RESET}")
+    print(f"  {'─' * 60}")
+
+def kv(key: str, value):
+    colour = RED if value in (None, "None", "(not set)") else ""
+    print(f"  {BOLD}{key:<18}{RESET}: {colour}{value}{RESET}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODE 1 — Direct Meilisearch search (no GPT)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def build_filter(color: Optional[str], max_price: Optional[float]) -> Optional[str]:
     parts = []
@@ -42,168 +65,279 @@ def build_filter(color: Optional[str], max_price: Optional[float]) -> Optional[s
     return " AND ".join(parts) if parts else None
 
 
-def search_with_embedder(
-    index,
-    query: str,
-    vector: List[float],
-    embedder: str,
-    ratio: float,
-    limit: int,
-    filter_str: Optional[str],
-) -> List[Dict[str, Any]]:
-    """Run a single hybrid search using a named embedder."""
+def search_with_embedder(index, query, vector, embedder, ratio, limit, filter_str):
     params: Dict[str, Any] = {
-        "hybrid": {
-            "embedder":     embedder,
-            "semanticRatio": ratio,   # 0.0 = pure BM25, 1.0 = pure vector
-        },
+        "hybrid": {"embedder": embedder, "semanticRatio": ratio},
         "vector": vector,
-        "limit":  limit,
-        "attributesToRetrieve": [
-            "id", "title", "type", "color", "size",
-            "price", "image_url", "handle", "search_text",
-        ],
+        "limit": limit,
+        "attributesToRetrieve": ["id", "title", "type", "color", "size",
+                                  "price", "image_url", "handle", "search_text"],
     }
     if filter_str:
         params["filter"] = filter_str
+
+    print(f"\n  {BOLD}[{embedder}] Meilisearch params:{RESET}")
+    safe = {k: (v if k != "vector" else f"<{len(v)}-dim vector>") for k, v in params.items()}
+    for k, v in safe.items():
+        print(f"    {k}: {v}")
 
     result = index.search(query, params)
     return result.get("hits", [])
 
 
-def merge_results(
-    text_hits: List[Dict],
-    image_hits: List[Dict],
-) -> List[Dict]:
-    """
-    Merge hits from both embedders.
-    Products appearing in both get a relevance bonus (score = 2).
-    Results are sorted by score descending.
-    """
+def merge_results(text_hits, image_hits):
     seen: Dict[str, Dict] = {}
-
     for hit in text_hits:
         pid = hit["id"]
         hit["_sources"] = ["text"]
         hit["_score"]   = 1
         seen[pid] = hit
-
     for hit in image_hits:
         pid = hit["id"]
         if pid in seen:
-            seen[pid]["_score"]   = 2          # double hit → higher relevance
+            seen[pid]["_score"]   = 2
             seen[pid]["_sources"].append("image")
         else:
             hit["_sources"] = ["image"]
             hit["_score"]   = 1
             seen[pid] = hit
-
     return sorted(seen.values(), key=lambda h: h["_score"], reverse=True)
 
 
-def print_results(results: List[Dict], query: str):
-    sep = "─" * 64
-    print(f"\n{sep}")
-    print(f"  Query  : \"{query}\"")
-    print(f"  Found  : {len(results)} unique products")
-    print(sep)
-
-    if not results:
-        print("  No results found.\n")
+def print_hits(hits, query):
+    section(f"RESULTS  (query: \"{query}\", {len(hits)} unique hits)")
+    if not hits:
+        print(f"  {RED}No results returned.{RESET}")
         return
-
-    for i, hit in enumerate(results, 1):
-        score_badge = "⭐⭐" if hit["_score"] == 2 else "⭐ "
-        sources     = " + ".join(hit["_sources"])
-        price       = f"PKR {hit.get('price', '?'):,.0f}" if hit.get("price") else "?"
-        url         = f"https://ismailsclothing.com/products/{hit.get('handle', '')}"
-
-        print(f"\n  [{i}] {score_badge} {hit.get('title', 'N/A')}")
-        print(f"       Color   : {hit.get('color', '?')}  |  Size: {hit.get('size', '?')}  |  Price: {price}")
-        print(f"       Type    : {hit.get('type', '?')}")
+    for i, h in enumerate(hits, 1):
+        stars   = "⭐⭐" if h["_score"] == 2 else "⭐ "
+        sources = " + ".join(h["_sources"])
+        price   = f"PKR {h.get('price', '?'):,.0f}" if h.get("price") else "?"
+        print(f"\n  [{i}] {stars} {BOLD}{h.get('title', 'N/A')}{RESET}")
+        print(f"       Color   : {h.get('color', '?')}  |  Size: {h.get('size', '?')}  |  Price: {price}")
         print(f"       Match   : {sources}")
-        print(f"       URL     : {url}")
-        if hit.get("image_url"):
-            print(f"       Image   : {hit['image_url']}")
-
-    print(f"\n{sep}\n")
+        if h.get("image_url"):
+            print(f"       Image   : {h['image_url']}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-
-def main():
-    parser = argparse.ArgumentParser(description="Hybrid search test for products index")
-    parser.add_argument("query",          type=str,   help="Search query")
-    parser.add_argument("--limit",        type=int,   default=6,    help="Max results per embedder (default: 6)")
-    parser.add_argument("--ratio",        type=float, default=0.6,  help="Semantic ratio 0.0–1.0 (default: 0.6)")
-    parser.add_argument("--color",        type=str,   default=None, help="Hard filter by color (e.g. BLACK)")
-    parser.add_argument("--max-price",    type=float, default=None, help="Hard filter: max price")
-    parser.add_argument("--text-only",    action="store_true",      help="Only use text embedder")
-    parser.add_argument("--image-only",   action="store_true",      help="Only use image embedder")
-    args = parser.parse_args()
+def run_direct(args):
+    from app.config.settings import settings
+    from app.services.embedding_service import embedding_service
+    import meilisearch
 
     query      = args.query
     filter_str = build_filter(args.color, args.max_price)
 
-    # ── Connect ───────────────────────────────────────────────────────────────
+    banner(f"MODE 1 — DIRECT SEARCH: \"{query}\"")
+
+    kv("query",       query)
+    kv("filter_str",  filter_str or "(none)")
+    kv("limit",       args.limit)
+    kv("ratio",       args.ratio)
+
     client = meilisearch.Client(settings.meilisearch_url, settings.meilisearch_master_key)
     try:
         client.health()
     except Exception as e:
-        print(f"❌  Cannot reach Meilisearch: {e}")
+        print(f"{RED}❌  Cannot reach Meilisearch: {e}{RESET}")
         sys.exit(1)
 
-    index = client.get_index(INDEX_NAME)
+    index = client.get_index(settings.meilisearch_index)
 
-    print(f"\nEmbedding query: \"{query}\"")
-    if filter_str:
-        print(f"Hard filters   : {filter_str}")
-
-    # ── Embed query ───────────────────────────────────────────────────────────
+    section("EMBEDDING QUERY")
     text_vector  = None
     image_vector = None
 
     if not args.image_only:
-        print("  → OpenAI (text embedder)…", end=" ", flush=True)
+        print("  OpenAI text embedding…", end=" ", flush=True)
         try:
             text_vector = embedding_service.embed_text(query)
-            print(f"✓  ({len(text_vector)}-dim)")
+            print(f"{GREEN}✓  ({len(text_vector)}-dim){RESET}")
         except Exception as e:
-            print(f"❌  {e}")
+            print(f"{RED}❌  {e}{RESET}")
 
     if not args.text_only:
-        print("  → SigLIP  (image embedder)…", end=" ", flush=True)
+        print("  SigLIP image embedding…", end=" ", flush=True)
         try:
             image_vector = embedding_service.embed_query_for_image_search(query)
-            print(f"✓  ({len(image_vector)}-dim)")
+            print(f"{GREEN}✓  ({len(image_vector)}-dim){RESET}")
         except Exception as e:
-            print(f"❌  {e}")
+            print(f"{RED}❌  {e}{RESET}")
 
-    # ── Search ────────────────────────────────────────────────────────────────
+    section("MEILISEARCH QUERIES")
     text_hits  = []
     image_hits = []
-
     if text_vector:
-        text_hits = search_with_embedder(
-            index, query, text_vector, "text",
-            args.ratio, args.limit, filter_str,
-        )
-
+        text_hits  = search_with_embedder(index, query, text_vector,  "text",  args.ratio, args.limit, filter_str)
     if image_vector:
-        image_hits = search_with_embedder(
-            index, query, image_vector, "image",
-            args.ratio, args.limit, filter_str,
+        image_hits = search_with_embedder(index, query, image_vector, "image", args.ratio, args.limit, filter_str)
+
+    merged = merge_results(text_hits, image_hits)
+    print_hits(merged, query)
+
+    print(f"\n  text hits: {len(text_hits)}  |  image hits: {len(image_hits)}  |  double-matched: {sum(1 for h in merged if h['_score'] == 2)}\n")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODE 2 — Full AI pipeline (GPT prompt → tool call → search)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def run_one_turn(
+    ai_service,
+    user_input: str,
+    chat_history: List[Dict[str, str]],
+    captured: Dict[str, Any],
+    patched_create,
+    patched_execute,
+):
+    """Process a single turn and append to chat_history."""
+    import types
+    captured.clear()
+    ai_service.client.chat.completions.create = patched_create
+    ai_service._execute_search = types.MethodType(patched_execute, ai_service)
+
+    final_response = await ai_service.process_whatsapp_message(
+        text_content=user_input,
+        chat_history=chat_history,
+    )
+
+    # ── Display hits ─────────────────────────────────────────────────────────
+    hits = captured.get("full", [])
+    if hits:
+        section(f"RAW SEARCH HITS  ({len(hits)} returned)")
+        col = [20, 14, 6, 10, 7]
+        hdrs = ["Title", "Color", "Size", "Price", "Score"]
+        print("  " + "  ".join(f"{h:<{w}}" for h, w in zip(hdrs, col)))
+        print("  " + "─" * (sum(col) + len(col) * 2))
+        for h in hits:
+            row = [
+                str(h.get("title", ""))[:col[0]],
+                str(h.get("color", ""))[:col[1]],
+                str(h.get("size",  ""))[:col[2]],
+                str(h.get("price", ""))[:col[3]],
+                str(h.get("_score", "")),
+            ]
+            print("  " + "  ".join(f"{v:<{w}}" for v, w in zip(row, col)))
+
+    section("AI RESPONSE")
+    print(f"\n  {GREEN}Isla: {final_response}{RESET}\n")
+
+    # Append both sides to history for the next turn
+    chat_history.append({"role": "user",      "content": user_input})
+    chat_history.append({"role": "assistant",  "content": final_response or ""})
+
+    return final_response
+
+
+async def run_ai_pipeline(initial_query: Optional[str] = None):
+    from app.services.ai_service import ai_service
+
+    banner("MODE 2 — FULL AI PIPELINE  (type 'quit' to exit)")
+
+    chat_history: List[Dict[str, str]] = []
+    captured: Dict[str, Any] = {}
+    original_create  = ai_service.client.chat.completions.create
+    original_execute = ai_service._execute_search.__func__
+
+    # ── Interceptors (defined once, reused every turn) ────────────────────────
+    async def patched_create(**kwargs):
+        resp = await original_create(**kwargs)
+        msg  = resp.choices[0].message
+        if msg.tool_calls:
+            section("GPT TOOL CALL  →  search_products")
+            for tc in msg.tool_calls:
+                args = json.loads(tc.function.arguments)
+                captured["tool_args"] = args
+                kv("search_query",  args.get("search_query"))
+                kv("color_filter",  args.get("color_filter") or "(not set)")
+                kv("max_price",     args.get("max_price") or "(not set)")
+                kv("searching_msg", args.get("searching_message", ""))
+        return resp
+
+    async def patched_execute(self, text_query, original_media_url=None, color=None, max_price=None):
+        filters = []
+        if color:
+            filters.append(f'color = "{color.upper()}"')
+        if max_price is not None:
+            filters.append(f"price <= {max_price}")
+        filter_str = " AND ".join(filters) if filters else None
+
+        section("SEARCH EXECUTION PAYLOAD")
+        kv("text_query",  text_query)
+        kv("color",       color or "(not set)")
+        kv("max_price",   max_price or "(not set)")
+        kv("filter_str",  filter_str or "(none)")
+        kv("media_url",   original_media_url or "(none)")
+
+        full, ai_ctx = await original_execute(self, text_query, original_media_url, color, max_price)
+        captured["full"]   = full
+        captured["ai_ctx"] = ai_ctx
+        return full, ai_ctx
+
+    # ── Conversation loop ─────────────────────────────────────────────────────
+    turn = 0
+    user_input = initial_query
+
+    while True:
+        turn += 1
+        if user_input is None:
+            try:
+                print(f"\n{BOLD}You:{RESET} ", end="", flush=True)
+                user_input = input().strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nBye! 👋")
+                break
+
+        if user_input.lower() in ("quit", "exit", "q"):
+            print("Bye! 👋")
+            break
+        if not user_input:
+            user_input = None
+            continue
+
+        print(f"\n{'═' * 66}")
+        print(f"  Turn {turn}  |  User: {BOLD}{user_input}{RESET}")
+        print(f"{'═' * 66}")
+
+        await run_one_turn(
+            ai_service, user_input, chat_history,
+            captured, patched_create, patched_execute,
         )
 
-    # ── Merge & display ───────────────────────────────────────────────────────
-    merged = merge_results(text_hits, image_hits)
-    print_results(merged, query)
+        user_input = None   # reset so next iteration reads from stdin
 
-    # ── Raw stats ─────────────────────────────────────────────────────────────
-    print(f"  text embedder hits  : {len(text_hits)}")
-    print(f"  image embedder hits : {len(image_hits)}")
-    double = sum(1 for h in merged if h["_score"] == 2)
-    print(f"  double-matched      : {double}  (appeared in both → highest relevance)\n")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Entry point
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Search pipeline test — direct Meilisearch (default) or full AI (--ai)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument("query",          type=str,   nargs="?",   help="Optional opening query")
+    parser.add_argument("--ai",           action="store_true",     help="Run full AI pipeline (GPT + tool call, conversation loop)")
+    parser.add_argument("--limit",        type=int,   default=6)
+    parser.add_argument("--ratio",        type=float, default=0.6, help="Semantic ratio 0–1 (default 0.6)")
+    parser.add_argument("--color",        type=str,   default=None)
+    parser.add_argument("--max-price",    type=float, default=None)
+    parser.add_argument("--text-only",    action="store_true")
+    parser.add_argument("--image-only",   action="store_true")
+    args = parser.parse_args()
+
+    if args.ai:
+        # In AI mode the first query is optional — the loop will prompt if missing
+        asyncio.run(run_ai_pipeline(initial_query=args.query))
+    else:
+        if not args.query:
+            print(f"\n{BOLD}Enter a search query (direct Meilisearch):{RESET}")
+            args.query = input("  > ").strip()
+            if not args.query:
+                print("No query provided. Exiting.")
+                sys.exit(0)
+        run_direct(args)
 
 
 if __name__ == "__main__":

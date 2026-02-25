@@ -34,6 +34,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 from app.config.settings import settings
 from app.services.embedding_service import embedding_service
+from app.services.image_caption_service import image_caption_service
 
 import meilisearch
 
@@ -55,9 +56,25 @@ def build_text(product: Dict[str, Any]) -> str:
       - Meilisearch full-text search (the ONLY searchable field)
     """
     title = (product.get("Title") or "").strip()
-    ptype = (product.get("Type")  or "").strip()
-    color = (product.get("Color") or "").strip()
-    return f"Article type is {ptype}. It is titled {title} and has color: {color}."
+
+    # Process body_html or generate a caption using Vision
+    body_html = (product.get("body_html") or product.get("Body (HTML)") or "").strip()
+    
+    # Strip basic HTML tags
+    clean_html = re.sub('<[^<]+>', ' ', body_html).strip()
+    
+    if clean_html and clean_html != "<!---->":
+        return f"Title: {title}. Description: {clean_html}"
+
+    # Missing or empty body HTML, generate caption
+    image_url = (product.get("Image_Src") or "").strip()
+    if image_url:
+        print(f"  [Captioner] Missing description for '{title}'. Generating from image...")
+        caption = image_caption_service.caption_image(image_url)
+        if caption:
+            return f"Title: {title}. Description: {caption}"
+            
+    return f"Title: {title}."
 
 
 def safe_float(val) -> Optional[float]:

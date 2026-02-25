@@ -64,7 +64,7 @@ class AIService:
             
             # Initial call to OpenAI
             response = await self.client.chat.completions.create(
-                model="gpt-4o-mini", # Using 4o-mini as it supports vision and function calling efficiently
+                model="gpt-4o", # Using 4o-mini as it supports vision and function calling efficiently
                 messages=messages,
                 tools=[SEARCH_TOOL_SCHEMA],
                 tool_choice="auto",
@@ -88,7 +88,13 @@ class AIService:
                         max_price = args.get("max_price")
                         searching_message = args.get("searching_message", "Give me a moment to look for that! 🔎")
                         
-                        logger.info(f"AI requested search with query: '{search_query}', color: {color_filter}, max_price: {max_price}")
+                        logger.info("━" * 60)
+                        logger.info("🛠  TOOL CALL: search_products")
+                        logger.info(f"   search_query    : {search_query!r}")
+                        logger.info(f"   color_filter    : {color_filter!r}")
+                        logger.info(f"   max_price       : {max_price!r}")
+                        logger.info(f"   searching_msg   : {searching_message!r}")
+                        logger.info("━" * 60)
                         
                         # Trigger early notification to WA (e.g. "Hold on, searching...")
                         if on_search_start:
@@ -153,6 +159,15 @@ class AIService:
             filters.append(f"price <= {max_price}")
         filter_str = " AND ".join(filters) if filters else None
 
+        logger.info("━" * 60)
+        logger.info("🔍 SEARCH EXECUTION")
+        logger.info(f"   text_query  : {text_query!r}")
+        logger.info(f"   color       : {color!r}")
+        logger.info(f"   max_price   : {max_price!r}")
+        logger.info(f"   filter_str  : {filter_str!r}")
+        logger.info(f"   media_url   : {original_media_url!r}")
+        logger.info("━" * 60)
+
         # ── Parallel Embedding ─────────────────────────────────────────────────
         # All embedding calls are blocking (torch / OpenAI HTTP). We offload each
         # to a thread so they run concurrently rather than sequentially.
@@ -198,6 +213,15 @@ class AIService:
                 asyncio.to_thread(embedding_service.embed_text, text_query) if text_query else asyncio.sleep(0),
                 _embed_siglip_text() if text_query else asyncio.sleep(0)
             )
+
+        logger.info("━" * 60)
+        logger.info("📦 MEILISEARCH PAYLOAD")
+        logger.info(f"   query        : {text_query!r}")
+        logger.info(f"   filter_str   : {filter_str!r}")
+        logger.info(f"   text_vector  : {'✓ ' + str(len(text_vector)) + '-dim' if text_vector else '✗ None'}")
+        logger.info(f"   image_vector : {'✓ ' + str(len(image_vector)) + '-dim' if image_vector else '✗ None'}")
+        logger.info(f"   limit        : 3")
+        logger.info("━" * 60)
 
         # Offload sync Meilisearch search to a thread — keeps the event loop free
         results = await asyncio.to_thread(
