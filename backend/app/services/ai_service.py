@@ -223,15 +223,66 @@ class AIService:
         logger.info(f"   limit        : 3")
         logger.info("━" * 60)
 
-        # Offload sync Meilisearch search to a thread — keeps the event loop free
-        results = await asyncio.to_thread(
-            search_service.perform_hybrid_search,
-            query=text_query,
-            text_vector=text_vector,
-            image_vector=image_vector,
-            limit=3,
-            filter_str=filter_str
-        )
+        # ── Helper: single threaded Meilisearch call ──────────────────────────
+        def _search(f_str):
+            return search_service.perform_hybrid_search(
+                query=text_query,
+                text_vector=text_vector,
+                image_vector=image_vector,
+                limit=3,
+                filter_str=f_str,
+            )
+
+        # ── Progressive filter cascade ────────────────────────────────────────
+        # Stage 1: Try with all active filters combined
+        results = await asyncio.to_thread(_search, filter_str)
+        logger.info(f"🔎 Stage 1 (full filter: {filter_str!r}): {len(results)} hits")
+
+        if not results and color and max_price is not None:
+            # Stage 2: Both filters active but 0 results — run each filter in parallel
+            logger.info("⚡ Stage 2: Running color-only and price-only searches in parallel…")
+            color_filter_str = f'color = "{color.upper()}"'
+            price_filter_str = f"price <= {max_price}"
+
+            color_results, price_results = await asyncio.gather(
+                asyncio.to_thread(_search, color_filter_str),
+                asyncio.to_thread(_search, price_filter_str),
+            )
+            logger.info(f"   color-only: {len(color_results)} hits | price-only: {len(price_results)} hits")
+
+            # Merge: primary sort by how many filters matched, secondary by Meilisearch ranking score
+            seen: dict = {}
+            for hit in color_results:
+                hit["_fallback_sources"] = ["color"]
+                hit["_fallback_score"]   = 1
+                hit["_rankingScore"]     = hit.get("_rankingScore", 0.0)
+                seen[hit["id"]] = hit
+            for hit in price_results:
+                pid    = hit["id"]
+                img_rs = hit.get("_rankingScore", 0.0)
+                if pid in seen:
+                    seen[pid]["_fallback_score"] = 2
+                    seen[pid]["_fallback_sources"].append("price")
+                    # Keep best ranking score across both filter results
+                    seen[pid]["_rankingScore"] = max(seen[pid]["_rankingScore"], img_rs)
+                else:
+                    hit["_fallback_sources"] = ["price"]
+                    hit["_fallback_score"]   = 1
+                    hit["_rankingScore"]     = img_rs
+                    seen[pid] = hit
+            results = sorted(
+                seen.values(),
+                key=lambda h: (h.get("_fallback_score", 1), h.get("_rankingScore", 0.0)),
+                reverse=True,
+            )
+            logger.info(f"   merged: {len(results)} unique hits")
+
+        if not results:
+            # Stage 3: No filter at all — pure semantic search
+            logger.info("⚡ Stage 3: Falling back to unfiltered semantic search…")
+            results = await asyncio.to_thread(_search, None)
+            logger.info(f"   unfiltered: {len(results)} hits")
+        # ─────────────────────────────────────────────────────────────────────
 
         # Full results for the backend image dispatcher (needs image_url + handle)
         full_results = []

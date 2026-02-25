@@ -129,7 +129,8 @@ class SearchService:
             params = {
                 "hybrid": {"embedder": "text", "semanticRatio": semantic_ratio},
                 "vector": text_vector,
-                "limit": limit
+                "limit": limit,
+                "showRankingScore": True,
             }
             if filter_str:
                 params["filter"] = filter_str
@@ -146,7 +147,8 @@ class SearchService:
             params = {
                 "hybrid": {"embedder": "image", "semanticRatio": semantic_ratio},
                 "vector": image_vector,
-                "limit": limit
+                "limit": limit,
+                "showRankingScore": True,
             }
             if filter_str:
                 params["filter"] = filter_str
@@ -167,26 +169,38 @@ class SearchService:
             text_hits  = future_text.result()
             image_hits = future_image.result()
 
-        # ── Merge & Score (Double Hit Heuristic) ───────────────────────────────
+        # ── Merge & Score ───────────────────────────────────────────────────────
+        # Primary sort  : _score      — 2 if hit by both embedders, 1 if only one
+        # Secondary sort: _rankingScore — Meilisearch's own similarity score (0–1)
+        #                 We keep the BEST score across embedders for each product.
         seen: Dict[str, Dict] = {}
 
         for hit in text_hits:
             pid = hit["id"]
             hit["_sources"] = ["text"]
-            hit["_score"] = 1
+            hit["_score"]   = 1
+            hit["_rankingScore"] = hit.get("_rankingScore", 0.0)
             seen[pid] = hit
 
         for hit in image_hits:
             pid = hit["id"]
+            img_rs = hit.get("_rankingScore", 0.0)
             if pid in seen:
                 seen[pid]["_score"] = 2
                 seen[pid]["_sources"].append("image")
+                # Keep the higher ranking score across both embedders
+                seen[pid]["_rankingScore"] = max(seen[pid]["_rankingScore"], img_rs)
             else:
-                hit["_sources"] = ["image"]
-                hit["_score"] = 1
+                hit["_sources"]      = ["image"]
+                hit["_score"]        = 1
+                hit["_rankingScore"] = img_rs
                 seen[pid] = hit
 
-        return sorted(seen.values(), key=lambda h: h["_score"], reverse=True)
+        return sorted(
+            seen.values(),
+            key=lambda h: (h["_score"], h["_rankingScore"]),
+            reverse=True,
+        )
 
 # Singleton instance
 search_service = SearchService()
