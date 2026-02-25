@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from app.config.settings import settings
 from app.database.engine import Base, engine, get_db
 from app.database.models import ShopInstallation  # noqa: F401
+from app.database.models.product_session import ProductSession  # noqa: F401
 from app.database.repositories.shop_installation_repository import ShopInstallationRepository
 from app.middleware.request_logging import log_requests_middleware
 from app.routes.auth_routes import router as auth_router

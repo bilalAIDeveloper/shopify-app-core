@@ -189,6 +189,7 @@ async def run_one_turn(
     captured: Dict[str, Any],
     patched_create,
     patched_execute,
+    phone_number: Optional[str] = None,
 ):
     """Process a single turn and append to chat_history."""
     import types
@@ -199,6 +200,7 @@ async def run_one_turn(
     final_response = await ai_service.process_whatsapp_message(
         text_content=user_input,
         chat_history=chat_history,
+        phone_number=phone_number,
     )
 
     # ── Display hits ─────────────────────────────────────────────────────────
@@ -234,10 +236,14 @@ async def run_one_turn(
     return final_response
 
 
-async def run_ai_pipeline(initial_query: Optional[str] = None):
+async def run_ai_pipeline(
+    initial_query: Optional[str] = None,
+    phone_number: Optional[str] = None,
+):
     from app.services.ai_service import ai_service
 
-    banner("MODE 2 — FULL AI PIPELINE  (type 'quit' to exit)")
+    phone_display = f"  Phone : {BOLD}{phone_number}{RESET}\n" if phone_number else ""
+    banner(f"MODE 2 — FULL AI PIPELINE  (type 'quit' to exit)\n{phone_display}")
 
     chat_history: List[Dict[str, str]] = []
     captured: Dict[str, Any] = {}
@@ -259,7 +265,7 @@ async def run_ai_pipeline(initial_query: Optional[str] = None):
                 kv("searching_msg", args.get("searching_message", ""))
         return resp
 
-    async def patched_execute(self, text_query, original_media_url=None, color=None, max_price=None):
+    async def patched_execute(self, text_query, original_media_url=None, color=None, max_price=None, exclude_handles=None):
         filters = []
         if color:
             filters.append(f'color = "{color.upper()}"')
@@ -273,8 +279,12 @@ async def run_ai_pipeline(initial_query: Optional[str] = None):
         kv("max_price",   max_price or "(not set)")
         kv("filter_str",  filter_str or "(none)")
         kv("media_url",   original_media_url or "(none)")
+        if exclude_handles:
+            kv("exclude_h",   str(exclude_handles))
 
-        full, ai_ctx, search_context = await original_execute(self, text_query, original_media_url, color, max_price)
+        full, ai_ctx, search_context = await original_execute(
+            self, text_query, original_media_url, color, max_price, exclude_handles
+        )
         captured["full"]   = full
         captured["ai_ctx"] = ai_ctx
         captured["search_context"] = search_context
@@ -308,6 +318,7 @@ async def run_ai_pipeline(initial_query: Optional[str] = None):
         await run_one_turn(
             ai_service, user_input, chat_history,
             captured, patched_create, patched_execute,
+            phone_number=phone_number,
         )
 
         user_input = None   # reset so next iteration reads from stdin
@@ -318,6 +329,12 @@ async def run_ai_pipeline(initial_query: Optional[str] = None):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
+    # Ensure database tables exist for the test script
+    from app.database.engine import Base, engine
+    from app.database.models import ShopInstallation
+    from app.database.models.product_session import ProductSession
+    Base.metadata.create_all(bind=engine)
+
     parser = argparse.ArgumentParser(
         description="Search pipeline test — direct Meilisearch (default) or full AI (--ai)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -325,6 +342,7 @@ def main():
     )
     parser.add_argument("query",          type=str,   nargs="?",   help="Optional opening query")
     parser.add_argument("--ai",           action="store_true",     help="Run full AI pipeline (GPT + tool call, conversation loop)")
+    parser.add_argument("--phone",        type=str,   default=None, help="Phone number to simulate (E.164 without +, e.g. 923001234567)")
     parser.add_argument("--limit",        type=int,   default=6)
     parser.add_argument("--ratio",        type=float, default=0.6, help="Semantic ratio 0–1 (default 0.6)")
     parser.add_argument("--color",        type=str,   default=None)
@@ -334,8 +352,7 @@ def main():
     args = parser.parse_args()
 
     if args.ai:
-        # In AI mode the first query is optional — the loop will prompt if missing
-        asyncio.run(run_ai_pipeline(initial_query=args.query))
+        asyncio.run(run_ai_pipeline(initial_query=args.query, phone_number=args.phone))
     else:
         if not args.query:
             print(f"\n{BOLD}Enter a search query (direct Meilisearch):{RESET}")

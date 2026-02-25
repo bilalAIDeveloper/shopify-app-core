@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     search_top_k: int = 3             # Max products returned per search
     search_min_score: float = 0.5     # Minimum _rankingScore for unfiltered (Stage 4) fallback
 
+    # Product session
+    session_context_limit: int = 6    # Max recent products to inject into the system prompt
+
     # WhatsApp Platform Integration (platform-wide config)
     wa_platform_url: str = ""
     wa_platform_shared_secret: str = ""

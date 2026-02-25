@@ -8,6 +8,8 @@ from app.utils.logger import get_logger
 from app.services.embedding_service import embedding_service
 from app.services.search_service import search_service
 from app.prompts.whatsapp_prompts import SYSTEM_PROMPT, SEARCH_TOOL_SCHEMA
+from app.database.engine import SessionLocal
+from app.database.repositories.product_session_repository import ProductSessionRepository
 
 logger = get_logger(__name__)
 
@@ -31,6 +33,36 @@ class AIService:
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
+
+        # ── Inject previously shown products into system prompt ───────────────────
+        if phone_number:
+            with SessionLocal() as db:
+                repo = ProductSessionRepository(db)
+                prev = repo.get_products(phone_number)
+
+            # Take the N most recent entries and format like format_products_for_ai
+            recent = prev[-settings.session_context_limit:] if prev else []
+            if recent:
+                prev_lines = [
+                    "\n\n[Products previously shown to this customer "
+                    f"(use to answer follow-up questions like 'how much was the first one?' "
+                    f"or 'show me more like item 2'):"
+                ]
+                for i, p in enumerate(recent, 1):
+                    price = p.get("price")
+                    price_str = f"PKR {price:,.0f}" if price is not None else "N/A"
+                    desc = (p.get("description") or "").strip()
+                    prev_lines.append(f"{i}. {p.get('title', '?')}")
+                    prev_lines.append(f"   Category    : {p.get('type') or 'N/A'}")
+                    prev_lines.append(f"   Color       : {p.get('color') or 'N/A'}")
+                    prev_lines.append(f"   Size        : {p.get('size') or 'N/A'}")
+                    prev_lines.append(f"   Price       : {price_str}")
+                    if desc:
+                        prev_lines.append(f"   Description : {desc}")
+                    prev_lines.append("")
+                prev_lines.append("Do not re-present these unless the customer explicitly asks.]")
+                messages[0]["content"] += "\n".join(prev_lines)
+                logger.info(f"📌 Injected {len(recent)} recent products into system prompt")
 
         # Inject chat history if provided
         if chat_history:
@@ -100,14 +132,41 @@ class AIService:
                         if on_search_start:
                             await on_search_start(searching_message)
 
-                        # Execute the search — returns (full_results, ai_context)
+                        # ── Load shown handles for exclusion ───────────────────────
+                        shown_handles: list[str] = []
+                        if phone_number:
+                            with SessionLocal() as db:
+                                repo = ProductSessionRepository(db)
+                                shown_handles = repo.get_shown_handles(phone_number)
+                            logger.info(f"� Session: {len(shown_handles)} handles to exclude")
+
+                        # Execute the search — returns (full_results, ai_context, search_context)
                         full_results, ai_context, search_context = await self._execute_search(
                             text_query=search_query,
                             original_media_url=media_url,
                             color=color_filter,
-                            max_price=max_price
+                            max_price=max_price,
+                            exclude_handles=shown_handles,
                         )
-                        
+
+                        # ── Save new products to session (with description) ─────────
+                        if phone_number and full_results:
+                            with SessionLocal() as db:
+                                repo = ProductSessionRepository(db)
+                                repo.append_products(phone_number, [
+                                    {
+                                        "title":       r.get("title"),
+                                        "color":       r.get("color"),
+                                        "size":        r.get("size"),
+                                        "price":       r.get("price"),
+                                        "handle":      r.get("handle"),
+                                        "type":        r.get("type"),
+                                        "description": r.get("description", ""),
+                                    }
+                                    for r in full_results
+                                ])
+                            logger.info(f"💾 Saved {len(full_results)} products to session for {phone_number}")
+
                         # Dispatch image cards to WhatsApp using full results (has image_url + handle)
                         if on_products_found:
                             await on_products_found(full_results)
@@ -143,20 +202,35 @@ class AIService:
         original_media_url: Optional[str] = None,
         color: Optional[str] = None,
         max_price: Optional[float] = None,
+        exclude_handles: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Executes the actual search by interacting with the embedding and search services.
         Result count and score threshold are read from settings (search_top_k, search_min_score).
+        exclude_handles: list of product handles to exclude from all search stages.
         """
         text_vector = None
         image_vector = None
 
-        # Build filter string
+        # Build base filter string (color + price)
         filters = []
         if color:
             filters.append(f'color = "{color.upper()}"')
         if max_price is not None:
             filters.append(f"price <= {max_price}")
+
+        # Build handle exclusion filter
+        exclusion_filter = None
+        if exclude_handles:
+            quoted = ", ".join(f'"{h}"' for h in exclude_handles)
+            exclusion_filter = f"handle NOT IN [{quoted}]"
+            logger.info(f"   exclude      : {len(exclude_handles)} handles")
+
+        def _with_exclusion(f_str: Optional[str]) -> Optional[str]:
+            """AND the exclusion clause onto whatever filter string is passed in."""
+            parts = [p for p in [f_str, exclusion_filter] if p]
+            return " AND ".join(parts) if parts else None
+
         filter_str = " AND ".join(filters) if filters else None
 
         logger.info("━" * 60)
@@ -310,6 +384,7 @@ class AIService:
                 "price":        r.get("price"),
                 "handle":       r.get("handle"),
                 "image_url":    r.get("image_url"),
+                "description":  r.get("search_text") or "",
                 "_score":       r.get("_score", 1),
                 "_rankingScore": round(r.get("_rankingScore", 0.0), 3),
             })
@@ -325,25 +400,28 @@ class AIService:
         return full_results, ai_context, search_context
 
 
-def format_products_for_ai(products: list, search_context: str = "") -> str:
+def format_products_for_ai(
+    products: list,
+    search_context: str = "",
+) -> str:
     """
-    Convert the ai_context list into a clean, numbered plain-text block
-    that is easy for the LLM to read and reference in its response.
-    Prepends a search context note so the AI knows whether filters were satisfied.
+    Convert the ai_context list into a clean, numbered plain-text block.
+    Prepends a [Search context] note so the AI knows whether filters were satisfied.
+    Previously shown products are injected into the system prompt separately.
     """
-    if not products:
-        note = search_context or "No matching products were found."
-        return note
-
     lines = []
+
     if search_context:
         lines.append(f"[Search context: {search_context}]\n")
-    lines.append(f"Found {len(products)} product(s):\n")
+
+    if not products:
+        lines.append(search_context or "No matching products were found.")
+        return "\n".join(lines)
+
+    lines.append(f"Found {len(products)} new product(s):\n")
     for i, p in enumerate(products, 1):
         price = p.get("price")
         price_str = f"PKR {price:,.0f}" if price is not None else "N/A"
-
-        # Full description — no truncation
         desc = (p.get("description") or "").strip()
 
         lines.append(f"{i}. {p.get('title', 'Unknown')}")
