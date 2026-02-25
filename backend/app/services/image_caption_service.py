@@ -20,7 +20,7 @@ class ImageCaptionService:
         try:
             logger.info(f"Generating caption for image: {image_url}")
             response = self.client.chat.completions.create(
-                model="gpt-4o",
+                model=settings.caption_model,
                 messages=[
                     {
                         "role": "user",

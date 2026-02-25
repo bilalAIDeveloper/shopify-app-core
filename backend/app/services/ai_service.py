@@ -64,7 +64,7 @@ class AIService:
             
             # Initial call to OpenAI
             response = await self.client.chat.completions.create(
-                model="gpt-4o", # Using 4o-mini as it supports vision and function calling efficiently
+                model=settings.chat_model,
                 messages=messages,
                 tools=[SEARCH_TOOL_SCHEMA],
                 tool_choice="auto",
@@ -101,9 +101,9 @@ class AIService:
                             await on_search_start(searching_message)
 
                         # Execute the search — returns (full_results, ai_context)
-                        full_results, ai_context = await self._execute_search(
+                        full_results, ai_context, search_context = await self._execute_search(
                             text_query=search_query,
-                            original_media_url=media_url, # Pass the original media for hybrid vector search
+                            original_media_url=media_url,
                             color=color_filter,
                             max_price=max_price
                         )
@@ -112,18 +112,17 @@ class AIService:
                         if on_products_found:
                             await on_products_found(full_results)
 
-                        # Feed only the lean ai_context to the LLM (no links or internal fields)
                         messages.append({
                             "tool_call_id": tool_call.id,
                             "role": "tool",
                             "name": "search_products",
-                            "content": json.dumps(ai_context)
+                            "content": format_products_for_ai(ai_context, search_context)
                         })
 
                 # Second call to OpenAI to generate the final response using the tool results
                 logger.info("Sending tool results back to OpenAI")
                 final_response = await self.client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model=settings.chat_model,
                     messages=messages,
                     max_tokens=500
                 )
@@ -143,10 +142,11 @@ class AIService:
         text_query: str,
         original_media_url: Optional[str] = None,
         color: Optional[str] = None,
-        max_price: Optional[float] = None
+        max_price: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """
         Executes the actual search by interacting with the embedding and search services.
+        Result count and score threshold are read from settings (search_top_k, search_min_score).
         """
         text_vector = None
         image_vector = None
@@ -220,69 +220,83 @@ class AIService:
         logger.info(f"   filter_str   : {filter_str!r}")
         logger.info(f"   text_vector  : {'✓ ' + str(len(text_vector)) + '-dim' if text_vector else '✗ None'}")
         logger.info(f"   image_vector : {'✓ ' + str(len(image_vector)) + '-dim' if image_vector else '✗ None'}")
-        logger.info(f"   limit        : 3")
+        logger.info(f"   limit        : {settings.search_top_k}")
         logger.info("━" * 60)
 
-        # ── Helper: single threaded Meilisearch call ──────────────────────────
-        def _search(f_str):
+        # ── Helper: standard search (with optional score threshold) ───────────
+        def _search(f_str, min_score: float = None):
             return search_service.perform_hybrid_search(
                 query=text_query,
                 text_vector=text_vector,
                 image_vector=image_vector,
-                limit=3,
+                limit=settings.search_top_k,
                 filter_str=f_str,
+                ranking_score_threshold=min_score,
             )
 
-        # ── Progressive filter cascade ────────────────────────────────────────
-        # Stage 1: Try with all active filters combined
+        # ── Progressive filter cascade ─────────────────────────────────────────
+        search_context = ""   # will describe what filters were actually used
+
+        # Build a human-readable description of what was requested
+        requested_parts = []
+        if color:     requested_parts.append(f"color={color.upper()}")
+        if max_price: requested_parts.append(f"max_price={max_price}")
+        requested_desc = ", ".join(requested_parts) if requested_parts else "none"
+
+        # ── Stage 1: Full filter (color + price) ──────────────────────────────
         results = await asyncio.to_thread(_search, filter_str)
         logger.info(f"🔎 Stage 1 (full filter: {filter_str!r}): {len(results)} hits")
 
-        if not results and color and max_price is not None:
-            # Stage 2: Both filters active but 0 results — run each filter in parallel
-            logger.info("⚡ Stage 2: Running color-only and price-only searches in parallel…")
+        if results:
+            search_context = (
+                f"Filters requested: {requested_desc}. "
+                f"All filters applied — results are exact matches."
+            )
+
+        # ── Stage 2: Color only (drop price) ──────────────────────────────────
+        if not results and color:
             color_filter_str = f'color = "{color.upper()}"'
+            logger.info(f"⚡ Stage 2 (color only: {color_filter_str!r})…")
+            results = await asyncio.to_thread(_search, color_filter_str)
+            logger.info(f"   color-only: {len(results)} hits")
+            if results:
+                search_context = (
+                    f"Filters requested: {requested_desc}. "
+                    f"No products matched both color and price together. "
+                    f"Showing products that match the color ({color.upper()}) — price filter was relaxed. "
+                    f"These may exceed the requested budget."
+                )
+
+        # ── Stage 3: Price only (drop color) ──────────────────────────────────
+        if not results and max_price is not None:
             price_filter_str = f"price <= {max_price}"
+            logger.info(f"⚡ Stage 3 (price only: {price_filter_str!r})…")
+            results = await asyncio.to_thread(_search, price_filter_str)
+            logger.info(f"   price-only: {len(results)} hits")
+            if results:
+                search_context = (
+                    f"Filters requested: {requested_desc}. "
+                    f"No products matched the requested color ({color.upper() if color else 'N/A'}). "
+                    f"Showing products within the budget (≤ {max_price}) — color filter was relaxed. "
+                    f"These are not the requested color."
+                )
 
-            color_results, price_results = await asyncio.gather(
-                asyncio.to_thread(_search, color_filter_str),
-                asyncio.to_thread(_search, price_filter_str),
-            )
-            logger.info(f"   color-only: {len(color_results)} hits | price-only: {len(price_results)} hits")
-
-            # Merge: primary sort by how many filters matched, secondary by Meilisearch ranking score
-            seen: dict = {}
-            for hit in color_results:
-                hit["_fallback_sources"] = ["color"]
-                hit["_fallback_score"]   = 1
-                hit["_rankingScore"]     = hit.get("_rankingScore", 0.0)
-                seen[hit["id"]] = hit
-            for hit in price_results:
-                pid    = hit["id"]
-                img_rs = hit.get("_rankingScore", 0.0)
-                if pid in seen:
-                    seen[pid]["_fallback_score"] = 2
-                    seen[pid]["_fallback_sources"].append("price")
-                    # Keep best ranking score across both filter results
-                    seen[pid]["_rankingScore"] = max(seen[pid]["_rankingScore"], img_rs)
-                else:
-                    hit["_fallback_sources"] = ["price"]
-                    hit["_fallback_score"]   = 1
-                    hit["_rankingScore"]     = img_rs
-                    seen[pid] = hit
-            results = sorted(
-                seen.values(),
-                key=lambda h: (h.get("_fallback_score", 1), h.get("_rankingScore", 0.0)),
-                reverse=True,
-            )
-            logger.info(f"   merged: {len(results)} unique hits")
-
+        # ── Stage 4: No filter — pure semantic search with score threshold ────
         if not results:
-            # Stage 3: No filter at all — pure semantic search
-            logger.info("⚡ Stage 3: Falling back to unfiltered semantic search…")
-            results = await asyncio.to_thread(_search, None)
-            logger.info(f"   unfiltered: {len(results)} hits")
-        # ─────────────────────────────────────────────────────────────────────
+            logger.info(f"⚡ Stage 4: Unfiltered semantic search (min_score={settings.search_min_score})…")
+            results = await asyncio.to_thread(_search, None, settings.search_min_score)
+            logger.info(f"   unfiltered: {len(results)} hits (score ≥ {settings.search_min_score})")
+            search_context = (
+                f"Filters requested: {requested_desc}. "
+                f"No products matched any of the requested filters. "
+                f"Showing best semantic matches from the full catalog — NOT filtered results. "
+                f"Inform the customer that exact matches were not found and offer alternatives."
+            )
+        # ──────────────────────────────────────────────────────────────────────
+
+        # Cap to top_k (safety net — Stage 2 can still return extras in edge cases)
+        results = results[:settings.search_top_k]
+        logger.info(f"✅ Final result count (after cap): {len(results)}")
 
         # Full results for the backend image dispatcher (needs image_url + handle)
         full_results = []
@@ -290,22 +304,58 @@ class AIService:
         ai_context = []
         for r in results:
             full_results.append({
-                "title": r.get("title"),
-                "color": r.get("color"),
-                "size": r.get("size"),
-                "price": r.get("price"),
-                "handle": r.get("handle"),
-                "image_url": r.get("image_url")
+                "title":        r.get("title"),
+                "color":        r.get("color"),
+                "size":         r.get("size"),
+                "price":        r.get("price"),
+                "handle":       r.get("handle"),
+                "image_url":    r.get("image_url"),
+                "_score":       r.get("_score", 1),
+                "_rankingScore": round(r.get("_rankingScore", 0.0), 3),
             })
             ai_context.append({
-                "title": r.get("title"),
-                "color": r.get("color"),
-                "size": r.get("size"),
-                "price": r.get("price"),
-                "type": r.get("type") or r.get("product_type")
+                "title":       r.get("title"),
+                "color":       r.get("color"),
+                "size":        r.get("size"),
+                "price":       r.get("price"),
+                "type":        r.get("type") or r.get("product_type"),
+                "description": r.get("search_text") or "",
             })
 
-        return full_results, ai_context
+        return full_results, ai_context, search_context
+
+
+def format_products_for_ai(products: list, search_context: str = "") -> str:
+    """
+    Convert the ai_context list into a clean, numbered plain-text block
+    that is easy for the LLM to read and reference in its response.
+    Prepends a search context note so the AI knows whether filters were satisfied.
+    """
+    if not products:
+        note = search_context or "No matching products were found."
+        return note
+
+    lines = []
+    if search_context:
+        lines.append(f"[Search context: {search_context}]\n")
+    lines.append(f"Found {len(products)} product(s):\n")
+    for i, p in enumerate(products, 1):
+        price = p.get("price")
+        price_str = f"PKR {price:,.0f}" if price is not None else "N/A"
+
+        # Full description — no truncation
+        desc = (p.get("description") or "").strip()
+
+        lines.append(f"{i}. {p.get('title', 'Unknown')}")
+        lines.append(f"   Category    : {p.get('type') or 'N/A'}")
+        lines.append(f"   Color       : {p.get('color') or 'N/A'}")
+        lines.append(f"   Size        : {p.get('size')  or 'N/A'}")
+        lines.append(f"   Price       : {price_str}")
+        if desc:
+            lines.append(f"   Description : {desc}")
+        lines.append("")  # blank line between products
+
+    return "\n".join(lines)
 
 
 ai_service = AIService()

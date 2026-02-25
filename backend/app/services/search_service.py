@@ -112,10 +112,12 @@ class SearchService:
         image_vector: Optional[List[float]] = None,
         limit: int = 10,
         semantic_ratio: float = 0.6,
-        filter_str: Optional[str] = None
+        filter_str: Optional[str] = None,
+        ranking_score_threshold: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """
         Runs dual hybrid search (text embedder vs image embedder) in parallel and merges results.
+        ranking_score_threshold: if set, Meilisearch only returns hits with _rankingScore >= threshold.
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -134,6 +136,8 @@ class SearchService:
             }
             if filter_str:
                 params["filter"] = filter_str
+            if ranking_score_threshold is not None:
+                params["rankingScoreThreshold"] = ranking_score_threshold
             try:
                 res = index.search(query, params)
                 return res.get("hits", [])
@@ -152,6 +156,8 @@ class SearchService:
             }
             if filter_str:
                 params["filter"] = filter_str
+            if ranking_score_threshold is not None:
+                params["rankingScoreThreshold"] = ranking_score_threshold
             try:
                 res = index.search(query, params)
                 return res.get("hits", [])

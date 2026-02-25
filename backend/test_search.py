@@ -205,17 +205,22 @@ async def run_one_turn(
     hits = captured.get("full", [])
     if hits:
         section(f"RAW SEARCH HITS  ({len(hits)} returned)")
-        col = [20, 14, 6, 10, 7]
-        hdrs = ["Title", "Color", "Size", "Price", "Score"]
+        col = [20, 10, 14, 8, 9, 5, 7]
+        hdrs = ["Title", "Color", "Handle", "Size", "Price", "Hit", "Rank"]
         print("  " + "  ".join(f"{h:<{w}}" for h, w in zip(hdrs, col)))
         print("  " + "─" * (sum(col) + len(col) * 2))
         for h in hits:
+            size_raw = h.get("size", "") or ""
+            if isinstance(size_raw, list):
+                size_raw = ", ".join(size_raw)
             row = [
-                str(h.get("title", ""))[:col[0]],
-                str(h.get("color", ""))[:col[1]],
-                str(h.get("size",  ""))[:col[2]],
-                str(h.get("price", ""))[:col[3]],
-                str(h.get("_score", "")),
+                str(h.get("title",  ""))[:col[0]],
+                str(h.get("color",  ""))[:col[1]],
+                str(h.get("handle", ""))[:col[2]],
+                str(size_raw)[:col[3]],
+                str(h.get("price",  ""))[:col[4]],
+                str(h.get("_score", ""))[:col[5]],
+                str(h.get("_rankingScore", ""))[:col[6]],
             ]
             print("  " + "  ".join(f"{v:<{w}}" for v, w in zip(row, col)))
 
@@ -269,10 +274,11 @@ async def run_ai_pipeline(initial_query: Optional[str] = None):
         kv("filter_str",  filter_str or "(none)")
         kv("media_url",   original_media_url or "(none)")
 
-        full, ai_ctx = await original_execute(self, text_query, original_media_url, color, max_price)
+        full, ai_ctx, search_context = await original_execute(self, text_query, original_media_url, color, max_price)
         captured["full"]   = full
         captured["ai_ctx"] = ai_ctx
-        return full, ai_ctx
+        captured["search_context"] = search_context
+        return full, ai_ctx, search_context
 
     # ── Conversation loop ─────────────────────────────────────────────────────
     turn = 0

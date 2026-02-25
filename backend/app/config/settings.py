@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     meilisearch_master_key: str = "masterKey"
     meilisearch_index: str = "products"
 
+    # AI Models
+    chat_model: str = "gpt-4.1-mini"       # Used by the WhatsApp assistant
+    caption_model: str = "gpt-4o-mini"     # Used for image captioning during ingestion
+
+    # Search behaviour
+    search_top_k: int = 3             # Max products returned per search
+    search_min_score: float = 0.5     # Minimum _rankingScore for unfiltered (Stage 4) fallback
+
     # WhatsApp Platform Integration (platform-wide config)
     wa_platform_url: str = ""
     wa_platform_shared_secret: str = ""
