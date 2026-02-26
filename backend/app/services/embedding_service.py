@@ -5,6 +5,9 @@ from io import BytesIO
 from PIL import Image
 import httpx
 import torch
+from openai import OpenAI
+from transformers import AutoProcessor, AutoModel
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.config.settings import settings
 from app.utils.logger import get_logger
@@ -25,7 +28,6 @@ class EmbeddingService:
         if self._siglip_model is None:
             logger.info(f"Loading SigLIP model: {self.siglip_model_id} on {self.device}...")
             try:
-                from transformers import AutoProcessor, AutoModel
                 self._siglip_processor = AutoProcessor.from_pretrained(self.siglip_model_id)
                 self._siglip_model = AutoModel.from_pretrained(self.siglip_model_id).to(self.device)
                 logger.info("SigLIP model loaded successfully.")
@@ -40,7 +42,6 @@ class EmbeddingService:
         Accepts a single string or a list of strings (batch mode).
         """
         try:
-            from openai import OpenAI
             client = OpenAI(api_key=settings.openai_api_key)
             
             # Ensure input is a list for batch processing, but handle single string case
@@ -97,8 +98,6 @@ class EmbeddingService:
         - Returns a list of the same length as `image_inputs`.
           Failed items return None instead of raising.
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
         n = len(image_inputs)
         loaded: List[Union[Image.Image, None]] = [None] * n
 

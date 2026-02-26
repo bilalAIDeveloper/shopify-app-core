@@ -1,6 +1,7 @@
-
 import meilisearch
 from typing import List, Dict, Any, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from app.config.settings import settings
 from app.utils.logger import get_logger
 
@@ -111,7 +112,7 @@ class SearchService:
         text_vector: Optional[List[float]] = None,
         image_vector: Optional[List[float]] = None,
         limit: int = 10,
-        semantic_ratio: float = 0.6,
+        semantic_ratio: float = None,
         filter_str: Optional[str] = None,
         ranking_score_threshold: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
@@ -119,7 +120,8 @@ class SearchService:
         Runs dual hybrid search (text embedder vs image embedder) in parallel and merges results.
         ranking_score_threshold: if set, Meilisearch only returns hits with _rankingScore >= threshold.
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        if semantic_ratio is None:
+            semantic_ratio = settings.search_semantic_ratio
 
         index = self.get_index(settings.meilisearch_index)
         if not index:
@@ -202,11 +204,24 @@ class SearchService:
                 hit["_rankingScore"] = img_rs
                 seen[pid] = hit
 
-        return sorted(
+        merged_hits = sorted(
             seen.values(),
             key=lambda h: (h["_score"], h["_rankingScore"]),
             reverse=True,
         )
+
+        if merged_hits:
+            logger.info("━" * 60)
+            logger.info(f"📊 HYBRID SEARCH RESULTS (Total unique: {len(merged_hits)})")
+            for i, hit in enumerate(merged_hits[:10]):
+                handle = hit.get('handle', 'unknown')
+                sources = '+'.join(hit['_sources'])
+                score = hit['_score']
+                ranking_score = hit['_rankingScore']
+                logger.info(f"  {i+1:2d}. [rank: {ranking_score:.4f}, match: {score}] srcs: {sources:11s} | {handle}")
+            logger.info("━" * 60)
+
+        return merged_hits
 
 # Singleton instance
 search_service = SearchService()

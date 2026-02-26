@@ -10,6 +10,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__)))
 from app.database.engine import SessionLocal
 from app.database.repositories.shop_installation_repository import ShopInstallationRepository
 from app.services.shopify_service import ShopifyService
+from app.database.models import ShopInstallation
 
 async def main():
     # 1. Create a DB session
@@ -18,7 +19,6 @@ async def main():
     try:
         # 2. Get the first shop installation from the DB
         # Access the database directly since get_all() might not exist on the repo
-        from app.database.models import ShopInstallation
         first_install = db.query(ShopInstallation).first()
         
         if not first_install:

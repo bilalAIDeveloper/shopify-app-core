@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     # Search behaviour
     search_top_k: int = 3             # Max products returned per search
     search_min_score: float = 0.5     # Minimum _rankingScore for unfiltered (Stage 4) fallback
+    search_semantic_ratio: float = 0.7 # Hybrid search ratio (0 = exact keywords, 1 = semantic only)
 
     # Product session
     session_context_limit: int = 6    # Max recent products to inject into the system prompt

@@ -13,6 +13,7 @@ Usage:
 import argparse
 import sys
 import os
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -47,7 +48,6 @@ def get_doc_count(index) -> int:
 
 def wait_for_task(client: meilisearch.Client, task_uid: int, description: str):
     """Poll until the task completes."""
-    import time
     print(f"   Waiting for task {task_uid} ({description})…", end=" ", flush=True)
     while True:
         task = client.get_task(task_uid)

@@ -29,6 +29,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
+# Make sure the backend package is importable and env vars are set before app imports
+backend_dir = Path(__file__).parent
+if str(backend_dir) not in sys.path:
+    sys.path.insert(0, str(backend_dir))
+
+# pydantic-settings needs the env vars to be present
+os.environ.setdefault("SHOPIFY_API_KEY",    "test_api_key")
+os.environ.setdefault("SHOPIFY_API_SECRET", "test_api_secret")
+os.environ.setdefault("APP_BASE_URL",       "https://test.ngrok-free.app")
+
+try:
+    import httpx
+except ImportError:
+    pass
+
+from sqlalchemy import select
+from app.database.engine import Base, SessionLocal, engine
+from app.database.models import ShopInstallation
+from app.database.models.shop_installation import ShopInstallation as SI
+from app.services.shopify_auth_service import ShopifyAuthService
+
 # ---------------------------------------------------------------------------
 # Colour helpers (works on Windows 10+ / Git Bash / VS Code terminal)
 # ---------------------------------------------------------------------------
@@ -124,9 +145,7 @@ def _section(title: str):
 # ---------------------------------------------------------------------------
 
 def run_integration_tests(base_url: str):
-    try:
-        import httpx
-    except ImportError:
+    if 'httpx' not in sys.modules:
         print(f"  {SKIP}  httpx not installed — skipping integration tests")
         print(f"         Run: pip install httpx")
         return
@@ -264,24 +283,7 @@ def run_integration_tests(base_url: str):
 def run_happy_path_unit_test():
     _section("7. Full OAuth Happy Path (in-process, Shopify mocked)")
 
-    # Make sure the backend package is importable
-    backend_dir = Path(__file__).parent
-    if str(backend_dir) not in sys.path:
-        sys.path.insert(0, str(backend_dir))
-
-    # pydantic-settings needs the env vars to be present
-    os.environ.setdefault("SHOPIFY_API_KEY",    API_KEY)
-    os.environ.setdefault("SHOPIFY_API_SECRET", API_SECRET)
-    os.environ.setdefault("APP_BASE_URL",       "https://test.ngrok-free.app")
-
-    try:
-        from app.database.engine import Base, SessionLocal, engine
-        from app.database.models import ShopInstallation  # noqa: F401 – register model
-        from app.services.shopify_auth_service import ShopifyAuthService
-    except Exception as exc:
-        _record("Can import service modules", False, str(exc))
-        print(f"\n  {INFO} Make sure you are running this from the backend/ directory.")
-        return
+    # Move standard sys.path and env logic to the top of the script.
 
     # Create tables (in-memory SQLite is fine for testing)
     Base.metadata.create_all(bind=engine)
@@ -342,8 +344,7 @@ def run_happy_path_unit_test():
             _record("State consumed after callback",               state not in service._states)
 
             # Verify DB write
-            from sqlalchemy import select
-            from app.database.models.shop_installation import ShopInstallation as SI
+            # Verify DB write
             row = db.execute(
                 select(SI).where(SI.shop_domain == shop, SI.access_mode == "offline")
             ).scalar_one_or_none()
@@ -421,7 +422,6 @@ if __name__ == "__main__":
     if not args.skip_server:
         _section("Connecting to server…")
         try:
-            import httpx
             probe = httpx.get(f"{args.base_url}/health", timeout=3)
             print(f"  {PASS}  Server is reachable (HTTP {probe.status_code})")
             run_integration_tests(args.base_url)

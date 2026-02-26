@@ -17,6 +17,7 @@ from app.templates import (
     generate_customer_row, 
     generate_order_row
 )
+from ingest_products import ingest_products, get_sync_status, SYNC_STATUS
 
 router = APIRouter()
 
@@ -110,8 +111,6 @@ async def sync_products(background_tasks: BackgroundTasks, shop: str, db: Sessio
     Trigger background ingestion of all products for a shop into Meilisearch.
     Returns immediately with 202 Accepted.
     """
-    from ingest_products import ingest_products, get_sync_status, SYNC_STATUS
-
     repo = ShopInstallationRepository(db)
     installation = repo.get_by_shop(shop)
     if not installation:
@@ -138,6 +137,5 @@ async def sync_status(shop: str):
     Poll the current sync status for a shop.
     Returns: { status, total, done, error }
     """
-    from ingest_products import get_sync_status
     return JSONResponse(content=get_sync_status(shop))
 

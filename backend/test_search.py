@@ -1,35 +1,36 @@
 """
 test_search.py
 ──────────────
-Two test modes in one script:
+Full AI pipeline:
+Sends the message through the full GPT prompt → tool call → search → response
+flow and prints a structured breakdown of every step, including:
+  • What arguments GPT sent to search_products
+  • The resulting filter string and vector shapes
+  • The raw Meilisearch hits
+  • The final AI response
 
-  MODE 1 – RAW SEARCH (positional query arg)
-  Tests Meilisearch directly, bypassing OpenAI entirely. Fast & deterministic.
-
-      python test_search.py "black cargo pants"
-      python test_search.py "blue jeans" --color BLUE --max-price 1500
-      python test_search.py "navy t-shirt" --text-only
-
-  MODE 2 – FULL AI PIPELINE (--ai flag)
-  Sends the message through the full GPT prompt → tool call → search → response
-  flow and prints a structured breakdown of every step, including:
-    • What arguments GPT sent to search_products
-    • The resulting filter string and vector shapes
-    • The raw Meilisearch hits
-    • The final AI response
-
-      python test_search.py --ai "blue jeans for boys"
-      python test_search.py --ai "shirts under 1000"
+    python test_search.py "blue jeans for boys"
+    python test_search.py "shirts under 1000"
 """
 
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
+import types
 from typing import Any, Dict, List, Optional
 
+from app.database.engine import Base, engine
+from app.database.models import ShopInstallation
+from app.database.models.product_session import ProductSession
+from app.services.ai_service import ai_service
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Enable basic logging to see internal loggers (ai_service, search_service, etc.)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # ── ANSI colours ────────────────────────────────────────────────────────────
 CYAN    = "\033[96m"
@@ -53,133 +54,7 @@ def kv(key: str, value):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# MODE 1 — Direct Meilisearch search (no GPT)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def build_filter(color: Optional[str], max_price: Optional[float]) -> Optional[str]:
-    parts = []
-    if color:
-        parts.append(f'color = "{color.upper()}"')
-    if max_price is not None:
-        parts.append(f"price <= {max_price}")
-    return " AND ".join(parts) if parts else None
-
-
-def search_with_embedder(index, query, vector, embedder, ratio, limit, filter_str):
-    params: Dict[str, Any] = {
-        "hybrid": {"embedder": embedder, "semanticRatio": ratio},
-        "vector": vector,
-        "limit": limit,
-        "attributesToRetrieve": ["id", "title", "type", "color", "size",
-                                  "price", "image_url", "handle", "search_text"],
-    }
-    if filter_str:
-        params["filter"] = filter_str
-
-    print(f"\n  {BOLD}[{embedder}] Meilisearch params:{RESET}")
-    safe = {k: (v if k != "vector" else f"<{len(v)}-dim vector>") for k, v in params.items()}
-    for k, v in safe.items():
-        print(f"    {k}: {v}")
-
-    result = index.search(query, params)
-    return result.get("hits", [])
-
-
-def merge_results(text_hits, image_hits):
-    seen: Dict[str, Dict] = {}
-    for hit in text_hits:
-        pid = hit["id"]
-        hit["_sources"] = ["text"]
-        hit["_score"]   = 1
-        seen[pid] = hit
-    for hit in image_hits:
-        pid = hit["id"]
-        if pid in seen:
-            seen[pid]["_score"]   = 2
-            seen[pid]["_sources"].append("image")
-        else:
-            hit["_sources"] = ["image"]
-            hit["_score"]   = 1
-            seen[pid] = hit
-    return sorted(seen.values(), key=lambda h: h["_score"], reverse=True)
-
-
-def print_hits(hits, query):
-    section(f"RESULTS  (query: \"{query}\", {len(hits)} unique hits)")
-    if not hits:
-        print(f"  {RED}No results returned.{RESET}")
-        return
-    for i, h in enumerate(hits, 1):
-        stars   = "⭐⭐" if h["_score"] == 2 else "⭐ "
-        sources = " + ".join(h["_sources"])
-        price   = f"PKR {h.get('price', '?'):,.0f}" if h.get("price") else "?"
-        print(f"\n  [{i}] {stars} {BOLD}{h.get('title', 'N/A')}{RESET}")
-        print(f"       Color   : {h.get('color', '?')}  |  Size: {h.get('size', '?')}  |  Price: {price}")
-        print(f"       Match   : {sources}")
-        if h.get("image_url"):
-            print(f"       Image   : {h['image_url']}")
-
-
-def run_direct(args):
-    from app.config.settings import settings
-    from app.services.embedding_service import embedding_service
-    import meilisearch
-
-    query      = args.query
-    filter_str = build_filter(args.color, args.max_price)
-
-    banner(f"MODE 1 — DIRECT SEARCH: \"{query}\"")
-
-    kv("query",       query)
-    kv("filter_str",  filter_str or "(none)")
-    kv("limit",       args.limit)
-    kv("ratio",       args.ratio)
-
-    client = meilisearch.Client(settings.meilisearch_url, settings.meilisearch_master_key)
-    try:
-        client.health()
-    except Exception as e:
-        print(f"{RED}❌  Cannot reach Meilisearch: {e}{RESET}")
-        sys.exit(1)
-
-    index = client.get_index(settings.meilisearch_index)
-
-    section("EMBEDDING QUERY")
-    text_vector  = None
-    image_vector = None
-
-    if not args.image_only:
-        print("  OpenAI text embedding…", end=" ", flush=True)
-        try:
-            text_vector = embedding_service.embed_text(query)
-            print(f"{GREEN}✓  ({len(text_vector)}-dim){RESET}")
-        except Exception as e:
-            print(f"{RED}❌  {e}{RESET}")
-
-    if not args.text_only:
-        print("  SigLIP image embedding…", end=" ", flush=True)
-        try:
-            image_vector = embedding_service.embed_query_for_image_search(query)
-            print(f"{GREEN}✓  ({len(image_vector)}-dim){RESET}")
-        except Exception as e:
-            print(f"{RED}❌  {e}{RESET}")
-
-    section("MEILISEARCH QUERIES")
-    text_hits  = []
-    image_hits = []
-    if text_vector:
-        text_hits  = search_with_embedder(index, query, text_vector,  "text",  args.ratio, args.limit, filter_str)
-    if image_vector:
-        image_hits = search_with_embedder(index, query, image_vector, "image", args.ratio, args.limit, filter_str)
-
-    merged = merge_results(text_hits, image_hits)
-    print_hits(merged, query)
-
-    print(f"\n  text hits: {len(text_hits)}  |  image hits: {len(image_hits)}  |  double-matched: {sum(1 for h in merged if h['_score'] == 2)}\n")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# MODE 2 — Full AI pipeline (GPT prompt → tool call → search)
+# Full AI pipeline (GPT prompt → tool call → search)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def run_one_turn(
@@ -192,7 +67,6 @@ async def run_one_turn(
     phone_number: Optional[str] = None,
 ):
     """Process a single turn and append to chat_history."""
-    import types
     captured.clear()
     ai_service.client.chat.completions.create = patched_create
     ai_service._execute_search = types.MethodType(patched_execute, ai_service)
@@ -240,10 +114,8 @@ async def run_ai_pipeline(
     initial_query: Optional[str] = None,
     phone_number: Optional[str] = None,
 ):
-    from app.services.ai_service import ai_service
-
     phone_display = f"  Phone : {BOLD}{phone_number}{RESET}\n" if phone_number else ""
-    banner(f"MODE 2 — FULL AI PIPELINE  (type 'quit' to exit)\n{phone_display}")
+    banner(f"FULL AI PIPELINE  (type 'quit' to exit)\n{phone_display}")
 
     chat_history: List[Dict[str, str]] = []
     captured: Dict[str, Any] = {}
@@ -329,38 +201,18 @@ async def run_ai_pipeline(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
-    # Ensure database tables exist for the test script
-    from app.database.engine import Base, engine
-    from app.database.models import ShopInstallation
-    from app.database.models.product_session import ProductSession
     Base.metadata.create_all(bind=engine)
 
     parser = argparse.ArgumentParser(
-        description="Search pipeline test — direct Meilisearch (default) or full AI (--ai)",
+        description="Search pipeline test — full AI conversation loop",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
     parser.add_argument("query",          type=str,   nargs="?",   help="Optional opening query")
-    parser.add_argument("--ai",           action="store_true",     help="Run full AI pipeline (GPT + tool call, conversation loop)")
     parser.add_argument("--phone",        type=str,   default=None, help="Phone number to simulate (E.164 without +, e.g. 923001234567)")
-    parser.add_argument("--limit",        type=int,   default=6)
-    parser.add_argument("--ratio",        type=float, default=0.6, help="Semantic ratio 0–1 (default 0.6)")
-    parser.add_argument("--color",        type=str,   default=None)
-    parser.add_argument("--max-price",    type=float, default=None)
-    parser.add_argument("--text-only",    action="store_true")
-    parser.add_argument("--image-only",   action="store_true")
     args = parser.parse_args()
 
-    if args.ai:
-        asyncio.run(run_ai_pipeline(initial_query=args.query, phone_number=args.phone))
-    else:
-        if not args.query:
-            print(f"\n{BOLD}Enter a search query (direct Meilisearch):{RESET}")
-            args.query = input("  > ").strip()
-            if not args.query:
-                print("No query provided. Exiting.")
-                sys.exit(0)
-        run_direct(args)
+    asyncio.run(run_ai_pipeline(initial_query=args.query, phone_number=args.phone))
 
 
 if __name__ == "__main__":

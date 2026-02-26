@@ -11,6 +11,7 @@ from app.config.settings import settings
 from app.database.engine import get_db
 from app.database.repositories.shop_installation_repository import ShopInstallationRepository
 from app.utils.logger import get_logger
+from app.services.ai_service import ai_service
 
 router = APIRouter(prefix="/api/whatsapp", tags=["whatsapp"])
 logger = get_logger(__name__)
@@ -309,8 +310,6 @@ async def receive_message(
     )
 
     # ── AI processing ──────────
-    from app.services.ai_service import ai_service
-
     try:
         async def _on_search_start(msg: str):
             if wa_api_key and from_number:
